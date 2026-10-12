@@ -1,0 +1,16 @@
+{
+  "name": "voxstage-native",
+  "private": true,
+  "version": "1.0.2",
+  "description": "Native shells for VoxStage karaoke player",
+  "scripts": {
+    "dev": "node ./scripts/dev.mjs",
+    "android:dev": "node ./scripts/dev.mjs android",
+    "android:build": "powershell -ExecutionPolicy Bypass -File .\\scripts\\build-android.ps1 -Target aarch64",
+    "tauri": "tauri",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1"
+  }
+}

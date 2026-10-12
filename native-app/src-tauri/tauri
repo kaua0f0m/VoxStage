@@ -1,0 +1,2 @@
+// Gradle's Tauri Android plugin invokes `node tauri ...` from this directory.
+require('../node_modules/@tauri-apps/cli/tauri.js');

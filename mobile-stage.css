@@ -1,0 +1,168 @@
+/* Stage < dialogs < alerts. Applies to browser fullscreen as well as Android. */
+.lyrics-dialog,.artwork-dialog,.processing-dialog,.modal-back { z-index: 220 !important; }
+.beta-dialog,.local-model-warning { z-index: 250 !important; }
+.toast { z-index: 300 !important; }
+body .manual-sync-dialog.show { position:fixed; inset:0; z-index:240!important; display:grid!important; place-items:center; padding:20px; background:#08090bd9; backdrop-filter:blur(10px); pointer-events:auto; }
+body .manual-sync-dialog .manual-sync-card { position:relative; inset:auto; display:block; width:min(680px,100%); max-height:85dvh; overflow:auto; padding:22px; border:1px solid #44444b; border-radius:20px; background:#1b1c21; box-shadow:0 24px 80px #0009; pointer-events:auto; }
+.manual-sync-card .manual-sync-copy { display:block!important; }
+.manual-sync-card .manual-sync-modes:not([hidden]) { display:flex!important; }
+.manual-sync-card #manualSyncCurrent,.manual-sync-card #manualSyncProgress,.manual-sync-card #markManualSync,.manual-sync-card #undoManualSync,.manual-sync-card #saveManualSync { display:none!important; }
+.manual-sync-card [hidden] { display:none!important; }
+.manual-sync-card footer { display:flex; flex-wrap:wrap; gap:8px; }
+.manual-sync-card footer button { min-height:44px; font-size:13px; }
+.manual-sync-card textarea { min-height:160px; font-size:16px; }
+.manual-sync-dialog.confirm-discard #editManualLyrics { display:none!important; }
+#syncToolbar { position:absolute; top:65px; left:20px; right:20px; z-index:25; padding:10px; border:1px solid #ffffff30; border-radius:14px; background:#17181de8; backdrop-filter:blur(12px); }
+#syncToolbar[hidden] { display:none!important; }
+#syncStageStatus { text-align:center; font-size:12px; color:var(--lime); margin-bottom:8px; }
+.sync-actions { display:flex; justify-content:center; gap:7px; flex-wrap:wrap; }
+.sync-actions button { min-height:44px; color:#eee; font-size:12px; }
+.sync-actions button:disabled { opacity:.4; }
+#syncSave:not(:disabled) { background:var(--lime); color:#151610; }
+.display.sync-editing .display-content { pointer-events:auto; cursor:pointer; touch-action:manipulation; padding-top:190px; }
+.display.sync-editing #mobileStageArtwork { display:none!important; }
+.display.sync-editing #lyricSync { visibility:hidden; }
+.display.sync-editing .lyrics { pointer-events:auto; }
+.display.sync-editing .display-content,.display.sync-editing .display-content * { user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent!important; touch-action:manipulation; }
+
+/* Mobile controls use their own groups; desktop toolbar rules do not position them. */
+/* Blurred backgrounds extend past the stage. They must not create a scrollable
+   container that Android focus or scrollIntoView can pan by their 24px inset. */
+body.mobile-native-app #display { overflow:clip!important; }
+body.mobile-native-app #display .stage-control-panel {
+  left:10px!important; right:10px!important; bottom:calc(8px + env(safe-area-inset-bottom))!important;
+  display:flex!important; flex-direction:column; align-items:stretch; gap:8px;
+  width:auto!important; height:auto!important; max-height:none!important; min-width:0;
+  padding:10px 12px!important; margin:0; overflow:visible!important; transform:none!important;
+  box-sizing:border-box; border-radius:16px;
+}
+body.mobile-native-app #display.mobile-controls-hidden .stage-control-panel { display:none!important; }
+body.mobile-native-app #display .stage-progress {
+  display:grid; grid-template-columns:38px minmax(0,1fr) 38px; align-items:center; gap:8px; min-width:0;
+}
+body.mobile-native-app #display .stage-progress .display-time {
+  font-size:10px!important; font-variant-numeric:tabular-nums; line-height:1; white-space:nowrap;
+}
+body.mobile-native-app #display .stage-progress #dispDuration { justify-self:end; }
+body.mobile-native-app #display .stage-progress .waveform-row,
+body.mobile-native-app #display .stage-progress .waveform-canvas {
+  height:22px!important; width:100%; min-width:0; grid-column:auto; grid-row:auto; order:0;
+}
+body.mobile-native-app #display .stage-controls { display:flex; flex-direction:column; gap:8px; min-width:0; }
+body.mobile-native-app #display .stage-playback,
+body.mobile-native-app #display .stage-actions,
+body.mobile-native-app #display .stage-tools-start,
+body.mobile-native-app #display .stage-tools-end { display:flex; align-items:center; justify-content:center; gap:8px; min-width:0; }
+body.mobile-native-app #display .stage-playback { gap:10px; }
+body.mobile-native-app #display .stage-playback .hud-btn {
+  display:inline-flex; align-items:center; justify-content:center; flex:none;
+  width:44px!important; min-width:44px!important; height:44px!important; min-height:44px!important; padding:0!important;
+  border-radius:12px; grid-column:auto!important; grid-row:auto!important;
+}
+body.mobile-native-app #display .stage-playback #dispPlay {
+  width:52px!important; min-width:52px!important; height:52px!important; border-radius:50%;
+  background:var(--lime); color:#151610;
+}
+body.mobile-native-app #display .stage-playback #previousDisplay { margin-right:8px; }
+body.mobile-native-app #display .stage-playback #nextDisplay { margin-left:8px; }
+body.mobile-native-app #display .stage-actions .hud-btn {
+  display:inline-flex; align-items:center; justify-content:center; gap:6px; flex:none;
+  width:auto!important; min-width:40px!important; height:38px!important; min-height:38px!important;
+  margin:0!important; padding:0 10px!important; font-size:11px; line-height:1; white-space:nowrap;
+  grid-column:auto!important; grid-row:auto!important; align-self:auto;
+}
+body.mobile-native-app #display .stage-actions .playback-icon { width:18px; height:18px; }
+body.mobile-native-app #display #mobileMixToggle { border-color:#ffffff40; }
+body.mobile-native-app #display #mobileMixToggle[aria-expanded=true] { background:var(--lime); color:#171811; }
+
+/* Anchor the mixer to the entire bar, leaving a gap above the waveform. */
+body.mobile-native-app #display .stage-control-panel .display-settings {
+  display:none!important; position:absolute!important; left:0!important; right:0!important;
+  top:auto!important; bottom:calc(100% + 12px)!important; width:auto!important; height:auto!important;
+  max-height:min(48dvh,310px)!important; min-height:0; margin:0; box-sizing:border-box;
+  overflow:auto!important; flex-wrap:wrap!important; gap:12px; padding:14px!important;
+  border:1px solid #ffffff36; border-radius:15px; background:#191a1ef5;
+  box-shadow:0 12px 40px #000b; z-index:35; white-space:normal; touch-action:pan-y;
+}
+body.mobile-native-app #display .stage-control-panel.mix-open .display-settings { display:flex!important; }
+body.mobile-native-app #display .display-settings .fullscreen-volumes {
+  flex:1 1 100%; width:100%; display:grid!important; grid-template-columns:1fr; gap:10px!important;
+}
+body.mobile-native-app #display .display-settings .hud-range {
+  display:flex; justify-content:space-between; width:100%; font-size:12px!important; gap:12px;
+}
+body.mobile-native-app #display .display-settings .hud-range input {
+  width:min(48vw,180px)!important; min-width:100px; height:24px!important;
+}
+body.mobile-native-app #display .display-settings .word-sync-toggle { width:100%; min-height:38px; }
+
+/* One header row keeps the view toggle away from the lyrics. */
+body.mobile-native-app #display .stage-hud {
+  display:grid!important; grid-template-columns:44px 44px minmax(0,1fr) auto; align-items:center; gap:10px;
+  top:calc(env(safe-area-inset-top) + 10px)!important; left:12px!important; right:12px!important;
+  width:auto!important; max-width:none!important; transform:none!important; pointer-events:auto; z-index:30;
+}
+body.mobile-native-app #display .stage-hud .brand { display:none!important; }
+body.mobile-native-app #display .stage-hud #dispTrack { min-width:0; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:center; }
+body.mobile-native-app #display .stage-hud .mobile-controls-toggle,
+body.mobile-native-app #display .stage-hud .quick-exit-display,
+body.mobile-native-app #display .stage-hud .mobile-stage-mode {
+  position:static!important; top:auto!important; left:auto!important; right:auto!important;
+  transform:none!important; display:inline-flex!important; align-items:center; justify-content:center;
+  width:auto!important; height:40px!important; min-height:40px; gap:6px; margin:0; padding:0 10px;
+  border:1px solid #ffffff35; border-radius:12px; background:#17181dcc; pointer-events:auto; font-size:10px;
+}
+body.mobile-native-app #display .stage-hud .mobile-controls-toggle,
+body.mobile-native-app #display .stage-hud .quick-exit-display { width:44px!important; min-width:44px!important; }
+body.mobile-native-app #display .stage-hud .mobile-stage-mode .playback-icon { width:17px; height:17px; }
+body.mobile-native-app #display .display-content {
+  padding-top:calc(76px + env(safe-area-inset-top))!important;
+  padding-bottom:calc(var(--controls-height,160px) + env(safe-area-inset-bottom))!important; gap:20px;
+}
+body.mobile-native-app #display.mobile-controls-hidden .display-content { padding-bottom:calc(22px + env(safe-area-inset-bottom))!important; }
+body.mobile-native-app #display .display-content .lyrics {
+  max-height:100%; overflow:auto; font-size:calc(clamp(25px,6vw,40px) * var(--lyrics-scale-portrait,1))!important;
+}
+body.mobile-native-app #display #mobileStageArtwork { width:min(42vw,22dvh); height:min(42vw,22dvh); }
+body.mobile-native-app #display.sync-editing .display-content { padding-top:calc(82px + var(--sync-height,110px) + env(safe-area-inset-top))!important; justify-content:center; }
+.mobile-native-app #syncToolbar { top:calc(70px + env(safe-area-inset-top)); left:12px; right:12px; }
+.mobile-native-app .sync-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:5px; }
+.mobile-native-app .sync-actions button { padding:5px; min-width:0; }
+.mobile-native-app .manual-sync-dialog.show { padding:12px; }
+.mobile-native-app .manual-sync-card { max-height:calc(100dvh - 48px)!important; padding:18px!important; }
+.mobile-native-app .player { display:grid!important; grid-template-columns:minmax(0,1fr)!important; gap:10px!important; padding:10px 16px calc(10px + env(safe-area-inset-bottom))!important; }
+.mobile-native-app .player .now { width:100%!important; min-height:48px; max-width:none!important; }
+.mobile-native-app .player .transport { width:100%; min-width:0; }
+.mobile-native-app .player .controls { width:100%; justify-content:space-evenly; gap:12px; }
+.mobile-native-app .player .controls button { display:inline-flex; align-items:center; justify-content:center; min-width:44px; min-height:44px; }
+.mobile-native-app .player .seek { width:100%; max-width:none; }
+.mobile-native-app .main { padding-bottom:220px!important; }
+
+@media(orientation:landscape) {
+  body.mobile-native-app #display .stage-control-panel { gap:6px; padding:8px 10px!important; }
+  body.mobile-native-app #display .stage-controls { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:10px; }
+  body.mobile-native-app #display .stage-playback { grid-column:2; grid-row:1; gap:8px; }
+  body.mobile-native-app #display .stage-actions { display:contents; }
+  body.mobile-native-app #display .stage-tools-start { grid-column:1; grid-row:1; justify-content:flex-start; }
+  body.mobile-native-app #display .stage-tools-end { grid-column:3; grid-row:1; justify-content:flex-end; }
+  body.mobile-native-app #display .stage-playback #dispPlay { width:48px!important; min-width:48px!important; height:48px!important; }
+  body.mobile-native-app #display .stage-playback #previousDisplay { margin-right:4px; }
+  body.mobile-native-app #display .stage-playback #nextDisplay { margin-left:4px; }
+  body.mobile-native-app #display .display-settings .fullscreen-volumes { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  body.mobile-native-app #display .display-settings .hud-range input { width:min(15vw,180px)!important; min-width:70px; }
+  body.mobile-native-app #display .display-content { padding-top:62px!important; flex-direction:row; gap:24px; }
+  body.mobile-native-app #display .display-content .lyrics { font-size:calc(clamp(26px,4vw,48px) * var(--lyrics-scale-tv,1))!important; }
+  body.mobile-native-app #display.mobile-stage-tv .display-content .lyrics { font-size:calc(clamp(34px,5.4vw,76px) * var(--lyrics-scale-tv,1))!important; }
+  .mobile-native-app #syncToolbar { top:56px; left:68px; right:68px; padding:6px; }
+  .mobile-native-app .sync-actions { gap:4px; }
+  .mobile-native-app .sync-actions button { min-height:34px; min-width:0; padding:4px 5px; font-size:10px; white-space:nowrap; }
+  body.mobile-native-app #display.sync-editing .display-content { padding-top:calc(65px + var(--sync-height,90px))!important; }
+}
+@media(orientation:landscape) and (max-width:700px) {
+  body.mobile-native-app #display .stage-action-label { display:none; }
+}
+@media(orientation:portrait) and (max-width:360px) {
+  body.mobile-native-app #display .stage-playback { gap:6px; }
+  body.mobile-native-app #display .stage-actions, body.mobile-native-app #display .stage-tools-start, body.mobile-native-app #display .stage-tools-end { gap:5px; }
+  body.mobile-native-app #display .stage-actions .hud-btn { padding:0 7px!important; font-size:10px; }
+}

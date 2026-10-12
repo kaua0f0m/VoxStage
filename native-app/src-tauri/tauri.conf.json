@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VoxStage",
+  "version": "1.0.2",
+  "identifier": "app.voxstage.player",
+  "build": {
+    "devUrl": "http://127.0.0.1:8000",
+    "frontendDist": "../web-dist",
+    "beforeBuildCommand": "node ./scripts/sync-frontend.mjs"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "VoxStage",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 850,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**"]
+      },
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": {
+      "../../fonts/Nunito-Variable.ttf": "app/fonts/Nunito-Variable.ttf",
+      "../../fonts/OFL-Nunito.txt": "app/fonts/OFL-Nunito.txt",
+      "../../server.py": "app/server.py",
+      "../../index.html": "app/index.html",
+      "../../app.js": "app/app.js",
+      "../../mobile-stage.css": "app/mobile-stage.css",
+      "../../onboarding.js": "app/onboarding.js",
+      "../../qr-code.js": "app/qr-code.js",
+      "../../remote.html": "app/remote.html",
+      "../../android-tv.js": "app/android-tv.js",
+      "../../android-tv.css": "app/android-tv.css",
+      "../../local_audio_runner.py": "app/local_audio_runner.py",
+      "../../requirements-local-audio-cpu.txt": "app/requirements-local-audio-cpu.txt",
+      "../../requirements-local-audio-dml.txt": "app/requirements-local-audio-dml.txt",
+      "../../requirements-align.txt": "app/requirements-align.txt",
+      "../../requirements-youtube.txt": "app/requirements-youtube.txt"
+    }
+  }
+}

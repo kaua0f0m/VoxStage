@@ -1,0 +1,9 @@
+{
+  "app": {
+    "windows": [{
+      "label": "main", "title": "VoxStage", "url": "http://127.0.0.1:8000/",
+      "width": 1280, "height": 820, "minWidth": 850, "minHeight": 560,
+      "resizable": true
+    }]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "voxstage",
+  "version": "1.0.2",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix native-app run dev",
+    "brand": "node native-app/scripts/create-brand.cjs",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File native-app/scripts/build-windows.ps1",
+    "build:android": "powershell -NoProfile -ExecutionPolicy Bypass -File native-app/scripts/build-android.ps1 -Target aarch64 -Release"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
