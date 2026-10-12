@@ -21,6 +21,7 @@ Plataformas
 - [x] Aplicativo para Android.
 - [x] Suporte a Android TV e Google TV, com navegação pelo controle remoto.
 - [x] Interface em português e inglês.
+
 Biblioteca e reprodução
 - [x] Importação de músicas e arquivos de áudio locais.
 - [x] Reprodução de músicas completas ou separadas em instrumental, vocais principais e backing vocals.
@@ -32,6 +33,7 @@ Biblioteca e reprodução
 - [x] Imagens e vídeos sem áudio como fundo da apresentação.
 - [x] Reprodução, pausa, avanço, retrocesso e seleção da posição na música.
 - [x] Exibição do nome completo de arquivos em um overlay no Android.
+
 Letras e apresentação
 - [x] Busca de letras pelo LRCLIB.
 - [x] Inserção e edição de letras, incluindo letras sincronizadas em LRC.
@@ -45,6 +47,7 @@ Letras e apresentação
 - [x] Botões para ocultar os controles e sair da apresentação.
 - [x] Ocultação automática dos controles no PC após cinco segundos sem movimento, preservando sua exibição enquanto o mouse estiver sobre eles.
 - [x] Personalização de cores, tamanho das letras e aparência da apresentação.
+
 Downloads e processamento
 - [x] Busca no YouTube Music, com opção de incluir resultados do YouTube.
 - [x] Importação por link do YouTube.
@@ -56,6 +59,7 @@ Downloads e processamento
 - [x] Orientações para obter e cadastrar uma chave MVSEP.
 - [x] Tela de envios e processamentos em progresso, permitindo sair do formulário e voltar depois.
 - [x] Notificações de processamento no Android.
+
 Celular, computador e TV
 - [x] Conexão entre dispositivos na mesma rede por QR code ou link.
 - [x] Leitura de QR code pela câmera ou por uma imagem no Android.
