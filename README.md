@@ -13,7 +13,60 @@
 
 Local karaoke for Windows, Android phones and Android / Google TV. The same
 Android application detects a TV and adapts its interface and remote controls.
-The VX symbol is the compact logo; the product name remains VoxStage.
+
+# Features
+
+Plataformas
+- [x] Aplicativo portátil para Windows.
+- [x] Aplicativo para Android.
+- [x] Suporte a Android TV e Google TV, com navegação pelo controle remoto.
+- [x] Interface em português e inglês.
+Biblioteca e reprodução
+- [x] Importação de músicas e arquivos de áudio locais.
+- [x] Reprodução de músicas completas ou separadas em instrumental, vocais principais e backing vocals.
+- [x] Controle independente do volume de cada faixa; músicas completas usam um único controle de volume.
+- [x] Busca na biblioteca, favoritos e músicas recentes.
+- [x] Edição de título, artista, capa e fundo.
+- [x] Exclusão e ocultação de músicas da biblioteca.
+- [x] Busca de capas, com aplicação como capa, fundo ou ambos.
+- [x] Imagens e vídeos sem áudio como fundo da apresentação.
+- [x] Reprodução, pausa, avanço, retrocesso e seleção da posição na música.
+- [x] Exibição do nome completo de arquivos em um overlay no Android.
+Letras e apresentação
+- [x] Busca de letras pelo LRCLIB.
+- [x] Inserção e edição de letras, incluindo letras sincronizadas em LRC.
+- [x] Sincronização manual por linha e por palavra.
+- [x] Ajustes de tempo e duração das linhas.
+- [x] Destaque da linha e da palavra em reprodução.
+- [x] Exibição de letras de backing vocals. (mediante calibração)
+- [x] Marcação de pausas vocais e indicação do tempo restante. (mediante calibração)
+- [x] Censura de palavras selecionadas, com tratamento visual e silenciamento dos vocais.
+- [x] Modo de apresentação em tela cheia.
+- [x] Botões para ocultar os controles e sair da apresentação.
+- [x] Ocultação automática dos controles no PC após cinco segundos sem movimento, preservando sua exibição enquanto o mouse estiver sobre eles.
+- [x] Personalização de cores, tamanho das letras e aparência da apresentação.
+Downloads e processamento
+- [x] Busca no YouTube Music, com opção de incluir resultados do YouTube.
+- [x] Importação por link do YouTube.
+- [x] Download de áudio com yt-dlp integrado.
+- [x] Download de vídeos no Windows.
+- [x] Separação na nuvem pelo MVSEP usando a chave API do usuário.
+- [x] Separação pelo MVSEP de músicas completas já salvas na biblioteca.
+- [x] Separação local no Windows, com instalação dos modelos necessários. (experimental)
+- [x] Orientações para obter e cadastrar uma chave MVSEP.
+- [x] Tela de envios e processamentos em progresso, permitindo sair do formulário e voltar depois.
+- [x] Notificações de processamento no Android.
+Celular, computador e TV
+- [x] Conexão entre dispositivos na mesma rede por QR code ou link.
+- [x] Leitura de QR code pela câmera ou por uma imagem no Android.
+- [x] Controle remoto da reprodução pelo celular.
+- [x] Envio de músicas do Android para o computador ou a TV.
+- [x] Transferência de músicas do computador para o Android.
+- [x] Envio da chave MVSEP do Android para a TV.
+- [x] Configuração inicial da TV pela tela de conexão ao celular.
+- [x] Fila de pedidos com aceitação automática de músicas já disponíveis.
+- [x] Transferência automática quando a música existe apenas no celular.
+- [x] Aprovação para pedidos de músicas ausentes nos dois dispositivos, que podem exigir processamento e gastar créditos.
 
 ## Sobre o projeto
 
