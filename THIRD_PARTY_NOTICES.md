@@ -31,3 +31,7 @@ VoxStage downloads `UVR-MDX-NET-Inst_HQ_3.onnx` on demand from the model source 
 ## Android yt-dlp integration
 
 The Android app uses [`yt-dlp-android`](https://github.com/ffmpegkit-maintained/yt-dlp-android), distributed under the MIT License. Its Android archive bundles CPython and yt-dlp; their respective licenses and notices are included by the upstream package. YouTube extraction behavior depends on upstream yt-dlp and may change as YouTube changes its service.
+
+## QuickJS (Android)
+
+Android includes the MIT-licensed QuickJS 2026-06-04 CLI by Fabrice Bellard and Charlie Gordon to run YouTube challenge scripts. Official source: https://bellard.org/quickjs/. Source download is checksum-pinned in `native-app/scripts/build-quickjs-android.py`; the interactive REPL is omitted. The license is included in Android assets as `QuickJS-LICENSE.txt`. The yt-dlp-ejs solver is bundled with yt-dlp under its upstream terms.

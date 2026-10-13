@@ -25,10 +25,9 @@ object YtDlpBridge {
     val directory = File(context.filesDir, "voxstage-python")
     check(directory.isDirectory || directory.mkdirs()) { "Não consegui preparar o motor de downloads." }
     val ytDlpBundle = File(directory, "yt-dlp-2026.08.19.zip")
-    if (!ytDlpBundle.isFile) {
-      context.assets.open(ytDlpBundle.name).use { source ->
-        ytDlpBundle.outputStream().use { source.copyTo(it) }
-      }
+    // Replace on upgrade as the archive also contains the challenge solver.
+    context.assets.open(ytDlpBundle.name).use { source ->
+      ytDlpBundle.outputStream().use { source.copyTo(it) }
     }
     context.assets.open("voxstage_youtube.py").use { source ->
       File(directory, "voxstage_youtube.py").outputStream().use { source.copyTo(it) }
@@ -36,6 +35,8 @@ object YtDlpBridge {
     val pythonPath = Python.getInstance().getModule("sys").get("path")!!
     pythonPath.callAttr("insert", 0, directory.absolutePath)
     pythonPath.callAttr("insert", 0, ytDlpBundle.absolutePath)
+    Python.getInstance().getModule("voxstage_youtube").callAttr(
+      "configure_runtime", File(context.applicationInfo.nativeLibraryDir, "libvoxstage_qjs.so").absolutePath)
     initialized = true
   }
   private fun call(method: String, vararg args: String): String = try {

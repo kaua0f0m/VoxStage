@@ -7,11 +7,48 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 from yt_dlp import YoutubeDL
 
+_runtime = None
+_clients = (None, 'android_vr', 'tv_downgraded')
+
+def configure_runtime(path):
+    global _runtime
+    runtime = Path(path)
+    if not runtime.is_file():
+        raise ValueError('O motor JavaScript do YouTube não foi encontrado. Reinstale a atualização.')
+    _runtime = str(runtime)
+
+def _retryable(error):
+    message = str(error).lower()
+    return any(part in message for part in ('403', 'not a bot', 'confirm you', 'requested format is not available', 'no video formats'))
+
+def _friendly_error(error):
+    if any(part in str(error).lower() for part in ('not a bot', 'confirm you', 'robô')):
+        return ValueError('O YouTube bloqueou o acesso neste aparelho ou nesta rede. Tente novamente em outra rede. Você também pode importar o áudio como música completa, salvar e escolher Separar com MVSEP no menu da música.')
+    return error
+
+def _client_options(base, client):
+    options = dict(base)
+    if client:
+        options['extractor_args'] = {'youtube': {'player_client': [client]}}
+    return options
+
+def _metadata(url):
+    for attempt, client in enumerate(_clients):
+        try:
+            with YoutubeDL(_client_options(dict(_options(), skip_download=True), client)) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Exception as error:
+            if attempt == len(_clients)-1 or not _retryable(error):
+                raise _friendly_error(error) from None
+
 
 def _options():
-    return dict(quiet=True, no_warnings=True, noprogress=True, socket_timeout=20,
+    options = dict(quiet=True, no_warnings=True, noprogress=True, socket_timeout=20,
                 retries=2, extractor_retries=2, fragment_retries=2, proxy="",
                 cachedir=False, noplaylist=True)
+    if _runtime:
+        options['js_runtimes'] = {'quickjs': {'path': _runtime}}
+    return options
 
 
 def _youtube_url(value):
@@ -53,7 +90,7 @@ def search_json(query, include_youtube="false"):
         try:
             opts = dict(_options(), skip_download=True, extract_flat="in_playlist", playlistend=8)
             with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(target, download=False)
+                info = _metadata(target) if is_url else ydl.extract_info(target, download=False)
                 raw = info.get("entries") if "entries" in info else [info]
                 for item in raw or []:
                     entry = _entry(item or {}, source)
@@ -67,14 +104,13 @@ def search_json(query, include_youtube="false"):
         except Exception as error:
             last_error = error
     if last_error and not entries:
-        raise last_error
+        raise _friendly_error(last_error) from None
     return json.dumps({"entries": entries}, ensure_ascii=False)
 
 
 def metadata_json(url):
     _youtube_url(url)
-    with YoutubeDL(dict(_options(), skip_download=True)) as ydl:
-        info = ydl.extract_info(url, download=False)
+    info = _metadata(url)
     artist = info.get("artist") or info.get("creator") or info.get("channel") or info.get("uploader") or ""
     if artist.endswith(" - Topic"):
         artist = artist[:-8]
@@ -97,14 +133,13 @@ def download_json(url, directory, kind="audio"):
             "best[ext=mp4][height<=720]/best[height<=720]/bestvideo[ext=mp4][height<=720]")
         info = None
         source = None
-        for attempt, player_client in enumerate((None, "android")):
+        for attempt, player_client in enumerate(_clients):
             attempt_dir = job / str(attempt)
             attempt_dir.mkdir()
             opts = dict(_options(), format=formats,
                         outtmpl=str(attempt_dir / "media.%(ext)s"),
                         writethumbnail=False, writeinfojson=False)
-            if player_client:
-                opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
+            opts = _client_options(opts, player_client)
             try:
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
@@ -113,8 +148,8 @@ def download_json(url, directory, kind="audio"):
                     source = Path(filename or ydl.prepare_filename(info)).resolve()
                 break
             except Exception as error:
-                if attempt or "403" not in str(error):
-                    raise
+                if attempt == len(_clients)-1 or not _retryable(error):
+                    raise _friendly_error(error) from None
         if source is None or source.parent != attempt_dir or not source.is_file() or source.suffix in (".part", ".ytdl"):
             raise ValueError("O YouTube não entregou um arquivo de mídia completo.")
         if not source.stat().st_size:

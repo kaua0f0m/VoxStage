@@ -8,7 +8,7 @@
   try { Object.assign(settings, JSON.parse(localStorage.getItem('voxstage-score-settings') || '{}')); } catch {}
   settings.tolerance = [40,75,100].includes(Number(settings.tolerance)) ? Number(settings.tolerance) : 75;
   settings.offsetMs = Math.max(-300, Math.min(500, Number(settings.offsetMs) || 0));
-  settings.noiseDb = Math.max(-65, Math.min(-20, Number(settings.noiseDb) || -48));
+  settings.noiseDb = Math.max(-80, Math.min(-6, Number.isFinite(Number(settings.noiseDb)) ? Number(settings.noiseDb) : -48));
   if (!['Vocals','All','Lead','Back','Custom'].includes(settings.reference)) settings.reference = 'Vocals';
   let armed = false, preparing = false, epoch = 0, prepareSequence = 0, sequence = 0;
   let stream = null, source = null, capture = null, sink = null, loadedContext = null;
@@ -22,12 +22,13 @@
   try { history = JSON.parse(localStorage.getItem('voxstage-score-history') || '[]').slice(0,20); } catch {}
   const dialog = document.createElement('dialog'); dialog.id = 'scoreDialog'; dialog.className = 'score-dialog';
   dialog.innerHTML = `<header><div><small>VOXSTAGE</small><h2>Pontuação</h2></div><button type="button" id="scoreClose" class="x" aria-label="Fechar pontuação">×</button></header>
-    <p>Cante acompanhando as notas. Use fones para o microfone ouvir sua voz. Cada nota acertada soma 1.000 pontos; os pontos conquistados ficam com você.</p>
+    <p>Cante acompanhando as notas. Cada nota acertada soma 1.000 pontos; os pontos conquistados ficam com você.</p>
+    <aside class="score-headphone-advice"><b>🎧 Fones de ouvido recomendados</b><span>O som dos alto-falantes pode encobrir sua voz ou ser contado como canto. Use fones ou reduza o volume da música e ajuste o filtro abaixo.</span></aside>
     <div class="score-fields"><label>Microfone<select id="scoreDevice"><option value="">Microfone deste aparelho</option>${!host.mobile||host.tv?'<option value="phone">Celular conectado</option>':''}</select><button type="button" id="scoreConnectPhone" class="btn secondary" ${host.mobile&&!host.tv?'hidden':''}>Conectar celular</button></label>
     <label>Melodia de referência<select id="scoreReference"><option value="Vocals">Ambos os vocais · principal + backing</option><option value="All">3 trilhas · vocais + instrumental</option><option value="Lead">Vocais principais</option><option value="Back">Backing vocals</option><option value="Custom">Outro arquivo vocal…</option></select><small id="scoreReferenceHint"></small></label>
     <label>Tolerância<select id="scoreTolerance"><option value="100">Fácil · 100 cents</option><option value="75">Normal · 75 cents</option><option value="40">Precisa · 40 cents</option></select></label>
     <label>Ajuste extra de atraso <output id="scoreOffsetValue">0 ms</output><input id="scoreOffset" type="range" min="-300" max="500" step="10"><small>Positivo compara sua voz com um trecho anterior. O atraso informado pelo dispositivo já é compensado.</small></label>
-    <label>Ignorar som abaixo de <output id="scoreNoiseValue">−48 dB</output><input id="scoreNoise" type="range" min="-65" max="-20" step="1"></label>
+    <label>Filtro de sons baixos <output id="scoreNoiseValue">−48 dB</output><input id="scoreNoise" type="range" min="-80" max="-6" step="1"><small>Próximo de 0 dB: rejeita mais sons fracos. Mais negativo: capta sons mais fracos. Você pode ajustar durante o canto.</small><small id="scoreNoiseLive" role="status">Nível do microfone aparece durante a reprodução.</small></label>
     <label class="score-check"><input id="scoreOctave" type="checkbox"> Aceitar outra oitava</label>
     <label class="score-check"><input id="scoreOverlayToggle" type="checkbox"> Mostrar notas no palco</label>
     <label class="score-check"><input id="scoreLaneLyricsToggle" type="checkbox"> Letras abaixo da barra de canto<small id="scoreLaneLyricsHint"></small></label></div>
@@ -55,7 +56,6 @@
   function saveSettings() { try { localStorage.setItem('voxstage-score-settings', JSON.stringify(settings)); } catch {} }
   const lyricHome=byId('lyrics').parentElement, lyricAnchor=document.createComment('stage lyrics');
   lyricHome.insertBefore(lyricAnchor,byId('lyrics'));
-  byId('scoreLaneLyrics').addEventListener('click',()=>{if(portrait()&&!host.state().manualSync)byId('mobileControlsToggle').click();});
   function portrait() { return host.mobile&&!host.tv&&matchMedia('(orientation: portrait)').matches; }
   function lyricsAllowed() {
     const song=host.state().song;
@@ -85,7 +85,8 @@
     byId('scoreReferenceHint').textContent = settings.reference === 'All' ? 'Prioriza os vocais; procura no instrumental quando não reconhece voz. Instrumentos podem ser confundidos com o cantor.' : settings.reference === 'Vocals' ? 'Analisa os dois stems separadamente e aceita a melodia reconhecida em qualquer vocal.' : '';
   }
   function lockControls() {
-    for (const id of ['scoreDevice','scoreReference','scoreTolerance','scoreOctave','scoreNoise','scoreCustomFile']) byId(id).disabled = armed || preparing;
+    for (const id of ['scoreDevice','scoreReference','scoreTolerance','scoreOctave','scoreCustomFile']) byId(id).disabled = armed || preparing;
+    byId('scoreNoise').disabled = preparing;
     byId('scoreStart').textContent = preparing ? 'Cancelar preparação' : armed ? 'Encerrar pontuação' : 'Ativar pontuação';
     byId('scoreReset').disabled = preparing;
     overlay.hidden = !(armed && settings.overlay);
@@ -120,7 +121,7 @@
   for (const [id, key] of [['scoreDevice','device'],['scoreReference','reference'],['scoreTolerance','tolerance'],['scoreOffset','offsetMs'],['scoreNoise','noiseDb'],['scoreOctave','acceptOctave'],['scoreOverlayToggle','overlay'],['scoreLaneLyricsToggle','laneLyrics']]) {
     byId(id).addEventListener(id === 'scoreOffset' || id === 'scoreNoise' ? 'input' : 'change', event => {
       settings[key] = event.target.type === 'checkbox' ? event.target.checked : ['tolerance','offsetMs','noiseDb'].includes(key) ? Number(event.target.value) : event.target.value;
-      saveSettings(); syncSettings(); lockControls(); if (key === 'offsetMs') { score?.resetTimeline(); epoch++; updateCapture(true); }
+      saveSettings(); syncSettings(); lockControls(); if (key === 'offsetMs' || key === 'noiseDb') { score?.resetTimeline(); updateCapture(true); }
     });
   }
   byId('scoreCustomFile').onchange = () => { customReference = byId('scoreCustomFile').files[0] || null; byId('scoreCustomName').textContent = customReference?.name || 'Escolha um vocal isolado, com o mesmo início da música.'; reference = null; };
@@ -295,6 +296,7 @@
       status(`Pronto · ${(voiced * reference.step).toFixed(1)} s de referência vocal (${referencePercent.toFixed(0)}% da faixa). Cante acompanhando a música desde o início.`);
       host.restart();
       dialog.close();byId('processingDialog').classList.remove('show');byId('display').classList.add('show');
+      if(host.mobile&&!host.tv&&!portrait()&&!byId('display').classList.contains('mobile-controls-hidden')) byId('mobileControlsToggle').click();
     } catch (error) {
       if (generation !== prepareSequence) return;
       stopScoring('error');
@@ -343,6 +345,7 @@
     byId('scoreActual').textContent = pitch.noteName(actual);
     byId('scoreCents').textContent = cents === null ? '—' : `${cents > 0 ? '+' : ''}${Math.round(cents)} cents`;
     byId('scoreLevel').textContent = lastDetected?.rms > 0 ? `${Math.round(20 * Math.log10(lastDetected.rms))} dB` : '—';
+    byId('scoreNoiseLive').textContent = lastDetected?.rms > 0 ? `Microfone: ${byId('scoreLevel').textContent} · ${lastDetected.rms >= 10**(settings.noiseDb/20) ? 'acima do filtro' : 'abaixo do filtro; não pontua'}` : 'Aguardando som do microfone durante a reprodução.';
     const result = score?.result();
     byId('scorePoints').textContent = (result?.points||0).toLocaleString('pt-BR');
     byId('scoreDialogPoints').textContent = byId('scorePoints').textContent;
@@ -543,8 +546,9 @@
     const stage=byId('display');
     if(overlay.hidden || !stage.classList.contains('show')) return;
     const controls=stage.querySelector('.display-bottom');
-    const top=overlay.getBoundingClientRect().bottom+24;
-    const bottom=stage.classList.contains('mobile-controls-hidden') ? 40 : controls.getBoundingClientRect().height+32;
+    const compact=host.mobile&&!host.tv&&!portrait();
+    const top=overlay.getBoundingClientRect().bottom+(compact?12:24);
+    const bottom=stage.classList.contains('mobile-controls-hidden') ? (compact?12:40) : controls.getBoundingClientRect().height+32;
     stage.style.setProperty('--score-lane-space',`${top}px`);
     stage.style.setProperty('--score-controls-space',`${bottom}px`);
   }

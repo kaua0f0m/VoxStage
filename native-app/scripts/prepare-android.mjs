@@ -21,3 +21,5 @@ const python = process.env.PYTHON || (process.platform==='win32'?'py':'python3')
 const args = process.platform==='win32' && !process.env.PYTHON ? ['-3.13'] : [];
 const bundle = spawnSync(python,[...args,resolve(nativeRoot,'scripts/bundle-yt-dlp.py')],{cwd:nativeRoot,stdio:'inherit'});
 if(bundle.status!==0) throw new Error('Install requirements-build.txt with Python 3.13 first.');
+const runtime = spawnSync(python,[...args,resolve(nativeRoot,'scripts/build-quickjs-android.py')],{cwd:nativeRoot,stdio:'inherit'});
+if(runtime.status!==0) throw new Error('Android JavaScript runtime compilation failed.');

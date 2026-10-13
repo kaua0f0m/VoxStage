@@ -61,6 +61,10 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    packaging {
+        // The bundled QuickJS CLI must be executable from nativeLibraryDir.
+        jniLibs.useLegacyPackaging = true
+    }
 }
 
 kotlin {

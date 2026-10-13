@@ -14,7 +14,10 @@ async function main(){
     assert.equal(JSON.parse(fs.readFileSync(path.join(root,'BUILD-SEQUENCE.json')))['1.1'],4);
     assert.match(fs.readFileSync(path.join(root,'build-info.js'),'utf8'),/1\.1 snapshot 4/);
     assert.throws(()=>readBuildInfo(root,'1.0.2'),/does not match/);
-    assert.equal(createBuildInfo(root,'1.0.2').label,'1.0.2 · build 1');
+    assert.equal(createBuildInfo(root,'1.0.2').label,'1.0.2');
+    const publicInfo=JSON.parse(fs.readFileSync(path.join(root,'build-info.json')));
+    assert.deepEqual(publicInfo,{version:'1.0.2',series:'1.0',label:'1.0.2'},'Public metadata excludes internal counter and identity');
+    assert.doesNotMatch(fs.readFileSync(path.join(root,'build-info.js'),'utf8'),/sequence|buildId|builtAt/);
     assert.equal(createBuildInfo(root,'1.2.0-test.1').label,'1.2 snapshot 1');
     assert.equal(createBuildInfo(root,'1.1.0-rc.1').label,'1.1 RC-1');
     fs.writeFileSync(path.join(root,'.build-sequence.lock'),'');

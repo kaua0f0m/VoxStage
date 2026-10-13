@@ -27,3 +27,19 @@ body.mobile-native-app #display .display-transport #scoreOpen{grid-column:auto!i
 /* Keep TV notes proportional to its viewport, with room for lyrics and transport. */
 body.android-tv-app #display #scoreGraph{height:clamp(68px,13dvh,110px)}
 
+/* A short landscape viewport needs room for the actual lyrics. */
+@media(orientation:landscape){
+  body.mobile-native-app:not(.android-tv-app) #display #scoreGraph{height:clamp(36px,12dvh,52px)}
+  body.mobile-native-app:not(.android-tv-app) #display .score-lane-heading{height:20px;padding:0 8px}
+  body.mobile-native-app:not(.android-tv-app) #display #scoreOpenOverlay b{font-size:13px}
+  body.mobile-native-app:not(.android-tv-app) #display #scoreOverlayNotes{font-size:10px}
+  body.mobile-native-app:not(.android-tv-app) #display #scoreLaneLyrics{height:36px;line-height:17px;font-size:12px}
+  body.mobile-native-app:not(.android-tv-app) #display .score-lane-word.backing{top:18px}
+  body.mobile-native-app:not(.android-tv-app) #display.score-lane-active.mobile-controls-hidden #scoreOverlay{left:114px;top:calc(env(safe-area-inset-top) + 10px)}
+  body.mobile-native-app:not(.android-tv-app) #display.score-lane-active.mobile-controls-hidden .stage-hud #dispTrack,
+  body.mobile-native-app:not(.android-tv-app) #display.score-lane-active.mobile-controls-hidden .mobile-stage-mode{visibility:hidden;pointer-events:none}
+}
+body.mobile-native-app:not(.android-tv-app) #scoreLaneLyrics{pointer-events:auto;cursor:pointer}
+body.mobile-native-app:not(.android-tv-app) #display.mobile-controls-hidden #lyrics{cursor:pointer}
+.score-headphone-advice{display:grid;gap:5px;margin:12px 0 18px;padding:12px 14px;border:1px solid #d4fb6933;border-radius:12px;background:#d4fb6908;font-size:12px;line-height:1.5}.score-headphone-advice b{color:var(--lime)}.score-headphone-advice span{color:var(--muted)}#scoreNoiseLive{font-variant-numeric:tabular-nums}
+

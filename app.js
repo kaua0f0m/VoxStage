@@ -3762,6 +3762,12 @@ function setStageControlsHidden(collapsed) {
   mobileControlsToggle.setAttribute('title', collapsed ? 'Mostrar controles' : 'Ocultar controles');
   mobileControlsToggle.textContent = collapsed ? '⌃' : '⌄';
 };
+// Hidden transport remains usable by touch, including lyrics moved into the lane.
+display.addEventListener('click', event => {
+  if (!mobileNative || androidTv || manualSyncState || display.classList.contains('sync-editing') || !event.target.closest('#lyrics,#scoreLaneLyrics') || event.target.closest('button,input,a')) return;
+  if (display.classList.contains('mobile-controls-hidden')) displayPlayButton.click();
+  else setStageControlsHidden(true);
+});
 transportRow.append(seekLabel, previousDisplay, displayBack10, displayPlayButton, displayForward10, nextDisplay, displayDuration, lyricsButton, displaySyncButton, displayExit);
 updateSeekStepButtons();
 displayBack10.onclick = () => nudgePlayback(-Math.max(1, Number(processingSettings.seekStepSeconds) || 10));
@@ -4566,7 +4572,7 @@ if (topbarCrumb) topbarCrumb.outerHTML = '<div class="brand corner-brand"><div c
 
 // Shared modal layering and the mobile stage layout have one final stylesheet.
 const mobileRevisionStyles = document.createElement('link');
-mobileRevisionStyles.rel = 'stylesheet'; mobileRevisionStyles.href = 'mobile-stage.css?v=1.1-rc-3';
+mobileRevisionStyles.rel = 'stylesheet'; mobileRevisionStyles.href = 'mobile-stage.css?v=1.1.1';
 document.head.append(mobileRevisionStyles);
 const finalBrandAndScaleStyles = document.createElement('style');
 finalBrandAndScaleStyles.textContent = `.vx-brand-mark{display:grid;place-items:center;background:#17191a!important;color:#d4fb69!important;border:1px solid #d4fb6944;box-shadow:inset 0 0 0 1px #ffffff08}.vx-brand-mark>span{font:900 12px/1 Manrope,sans-serif;letter-spacing:-1.2px}.vx-brand-mark i{font-style:normal;color:#d4fb69;font-size:17px;vertical-align:-1px;margin:0 -1px}.profanity-picker-dialog{z-index:60}.lyric-backing-line{pointer-events:none}.playback-icon{display:block;width:24px;height:24px;flex:none}.player .controls button .playback-icon{width:22px;height:22px}`;

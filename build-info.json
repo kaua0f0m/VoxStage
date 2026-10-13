@@ -1,8 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.1.1",
   "series": "1.1",
-  "sequence": 8,
-  "label": "1.1.0 · build 8",
-  "buildId": "c180c621-e98c-4da7-b84b-953c054a9130",
-  "builtAt": "2026-10-13T01:41:55.134Z"
+  "label": "1.1.1"
 }

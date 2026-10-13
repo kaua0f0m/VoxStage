@@ -2,6 +2,7 @@ node_modules/
 native-app/node_modules/
 native-app/src-tauri/target/
 native-app/web-dist/
+native-app/.build-cache/
 native-app/dev-data/
 native-app/test-results/
 native-app/tests/voxstage-test-*/
@@ -19,6 +20,9 @@ __pycache__/
 *.py[cod]
 *.log
 .build-sequence.lock
+BUILD-SEQUENCE.json
+BUILD-DETAILS.json
+BUILD-DETAILS.json.tmp
 BUILD-SEQUENCE.json.tmp
 build-info.json.tmp
 build-info.js.tmp

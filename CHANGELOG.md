@@ -1,5 +1,13 @@
 # Changelog
 
+## Novidades da 1.1.1
+
+- Pontuação mais compacta no Android em paisagem, com controles ocultos ao começar e acesso rápido para mostrá-los novamente. Tocar na letra com os controles ocultos pausa ou continua a música.
+- Motor JavaScript integrado no Android/Google TV para os desafios do YouTube, com recuperação de falhas e tentativas alternativas. Bloqueios por aparelho ou rede ainda podem exigir importar o áudio de outra forma.
+- Filtro do microfone de −80 a −6 dB, ajustável durante o canto, com indicação do nível captado e recomendação de fones para reduzir o vazamento da música.
+
+**Sobre a experiência no celular:** peço desculpas pelas dificuldades com a pontuação. Estes ajustes ajudaram, mas ainda não posso garantir uma experiência tão boa quanto no PC/TV. Recomendo fones de ouvido; o som dos alto-falantes pode encobrir sua voz ou contar como canto.
+
 ## Novidades da 1.1
 
 - Pontuação de canto com notas sustentadas, microfone local, referências por ambos os vocais ou pelas três trilhas, início automático da música e histórico local.

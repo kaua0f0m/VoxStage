@@ -53,7 +53,10 @@ async function main(){
     const snapshot=await page.evaluate(()=>VoxStageScoring.snapshot());
     assert.equal(snapshot.result.points,1000,JSON.stringify(snapshot.result));assert.ok(snapshot.hasStream);
     assert.equal(await page.locator('#scoreDialog').evaluate(node=>node.open),false);
-    assert.equal(await page.evaluate(()=>VoxStageBuildInfo.version),'1.1.0');
+    const expectedVersion=JSON.parse(fs.readFileSync(path.resolve(__dirname,'../../package.json'),'utf8')).version;
+    assert.equal(await page.evaluate(()=>VoxStageBuildInfo.version),expectedVersion);
+    assert.equal(await page.evaluate(()=>VoxStageBuildInfo.label),expectedVersion);
+    assert.equal(await page.evaluate(()=>['sequence','buildId','builtAt'].some(key=>key in VoxStageBuildInfo)),false,'Internal build metadata is absent from the shipped app');
     await page.screenshot({path:path.join(artifacts,'scoring-native.png')});
     await page.evaluate(()=>{pausePlayback();VoxStageScoring.stop();});
     assert.equal(await page.evaluate(()=>VoxStageScoring.snapshot().hasStream),false);

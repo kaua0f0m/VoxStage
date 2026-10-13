@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$taskExecutable = Join-Path $taskRoot 'releases/V1.1.0/VoxStage-Windows-x64/VoxStage.exe'
+$taskVersion = (Get-Content (Join-Path $taskRoot 'package.json') -Raw | ConvertFrom-Json).version
+$taskExecutable = Join-Path $taskRoot "releases/V$taskVersion/VoxStage-Windows-x64/VoxStage.exe"
 $taskResults = Join-Path $taskRoot 'native-app/test-results'
 $taskData = Join-Path $taskResults ('rc-native-data-' + [guid]::NewGuid())
 $taskProfile = Join-Path $taskResults ('rc-native-profile-' + [guid]::NewGuid())
@@ -26,7 +27,7 @@ try {
     & node (Join-Path $PSScriptRoot 'scoring-native.cjs')
     if ($LASTEXITCODE -ne 0) { throw 'Native RC scoring verification failed.' }
     $taskProcess.Refresh()
-    if ($taskProcess.MainWindowTitle -ne 'VoxStage 1.1') { throw "Unexpected native window title: $($taskProcess.MainWindowTitle)" }
+    if ($taskProcess.MainWindowTitle -ne "VoxStage $taskVersion") { throw "Unexpected native window title: $($taskProcess.MainWindowTitle)" }
 } finally {
     foreach ($taskName in $taskNames) { [Environment]::SetEnvironmentVariable($taskName, $taskPrevious[$taskName], 'Process') }
     if ($taskProcess -and -not $taskProcess.HasExited) {

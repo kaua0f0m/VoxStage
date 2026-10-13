@@ -68,6 +68,15 @@ async function main(){
     await selectSong(mobile);assert.equal(await mobile.locator('#scoreLaneLyricsToggle').isDisabled(),false,'Portrait permits line-only lyrics');
     await mobile.locator('#scoreStart').click();await mobile.waitForFunction(()=>VoxStageScoring.snapshot().armed);assert.equal(await mobile.locator('#scoreDialog').evaluate(node=>node.open),false);
     await mobile.waitForFunction(()=>VoxStageScoring.snapshot().lastDetected?.frequency>400);
+    await mobile.evaluate(()=>VoxStageScoring.open());
+    assert.equal(await mobile.locator('#scoreNoise').isDisabled(),false,'Noise filter is adjustable without restarting scoring');
+    assert.equal(await mobile.locator('#scoreNoise').getAttribute('min'),'-80');assert.equal(await mobile.locator('#scoreNoise').getAttribute('max'),'-6');
+    await mobile.locator('#scoreNoise').fill('-12');
+    await mobile.waitForFunction(()=>VoxStageScoring.snapshot().lastDetected?.rms>0&&VoxStageScoring.snapshot().lastDetected?.frequency===0);
+    assert.match(await mobile.locator('#scoreNoiseLive').textContent(),/abaixo do filtro/);
+    await mobile.locator('#scoreNoise').fill('-65');await mobile.waitForFunction(()=>VoxStageScoring.snapshot().lastDetected?.frequency>400);
+    assert.match(await mobile.locator('.score-headphone-advice').textContent(),/encobrir sua voz/);
+    await mobile.locator('#scoreClose').click();
     await mobile.evaluate(()=>{pausePlayback();setStageControlsHidden(false);});await verifyPerformanceRow(mobile);
     assert.equal(await mobile.locator('#lyrics').evaluate(node=>node.parentElement.id),'scoreLaneLyrics');
     assert.equal(await mobile.locator('#lyricCurrentLine').count(),1,'Portrait moves the existing lyric view, without duplicates');
@@ -92,6 +101,21 @@ async function main(){
     assert.ok(await mobile.locator('#scoreGraph').evaluate(node=>node.getBoundingClientRect().height)<80);
     await mobile.waitForFunction(()=>lyrics.getBoundingClientRect().top>=document.getElementById('scoreOverlay').getBoundingClientRect().bottom);
     await mobile.screenshot({path:path.join(artifacts,'rc-android-landscape.png')});
+    for(const viewport of [{width:640,height:360},{width:560,height:280},{width:844,height:390}]){
+      await mobile.setViewportSize(viewport);await mobile.evaluate(()=>setStageControlsHidden(true));
+      await mobile.waitForTimeout(200);
+      const room=await mobile.evaluate(()=>{const lane=scoreOverlay.getBoundingClientRect(),text=lyrics.getBoundingClientRect(),toggle=mobileControlsToggle.getBoundingClientRect();return{laneHeight:lane.height,laneBottom:lane.bottom,textTop:text.top,textHeight:text.height,screenHeight:innerHeight,toggleRight:toggle.right,laneLeft:lane.left};});
+      assert.ok(room.laneHeight<viewport.height*.30,JSON.stringify(room));
+      assert.ok(room.textHeight>=40&&room.textTop>=room.laneBottom&&room.textTop+room.textHeight<=viewport.height-8,JSON.stringify(room));
+      assert.ok(room.toggleRight<room.laneLeft,JSON.stringify(room));
+      await mobile.locator('#lyrics').click();await mobile.waitForFunction(()=>playing);
+      await mobile.locator('#lyrics').click();await mobile.waitForFunction(()=>!playing);
+      assert.equal(await mobile.evaluate(()=>VoxStageScoring.snapshot().armed),true,'Touch pause preserves scoring session');
+      await mobile.locator('#mobileControlsToggle').click();
+      assert.equal(await mobile.evaluate(()=>display.classList.contains('mobile-controls-hidden')),false,'Transport can always be restored');
+    }
+    await mobile.evaluate(()=>setStageControlsHidden(true));
+    await mobile.screenshot({path:path.join(artifacts,'1.1.1-android-landscape-compact.png')});
     await mobile.evaluate(()=>{VoxStageScoring.stop();VoxStageScoring.open();window.__micDenied=true;});
     await mobile.locator('#scoreStart').click();await mobile.waitForFunction(()=>!VoxStageScoring.snapshot().preparing);assert.equal(await mobile.evaluate(()=>VoxStageScoring.snapshot().armed),false);
     assert.match(await mobile.locator('#scoreStatus').textContent(),/negada|cancelada/);assert.ok(await mobile.evaluate(()=>window.__micStopped)>0);

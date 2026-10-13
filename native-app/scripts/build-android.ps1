@@ -4,7 +4,8 @@ param(
     [switch]$Release,
     [switch]$StandaloneDebug,
     [switch]$ReleaseCandidate,
-    [switch]$ReuseBuildInfo
+    [switch]$ReuseBuildInfo,
+    [switch]$SkipPreparation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,8 +60,15 @@ if (-not (Test-Path (Join-Path $androidRoot 'gradlew.bat'))) {
 
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 $tauriCli = Join-Path $nativeRoot 'node_modules\@tauri-apps\cli\tauri.js'
-& $node (Join-Path $PSScriptRoot 'prepare-android.mjs')
-if ($LASTEXITCODE -ne 0) { throw 'Android preparation failed.' }
+if ($SkipPreparation) {
+    # Frontend-only rebuild after this checkout's runtime was already prepared.
+    foreach ($asset in @('app\src\main\jniLibs\arm64-v8a\libvoxstage_qjs.so','app\src\main\assets\yt-dlp-2026.08.19.zip','tauri.settings.gradle')) {
+        if (-not (Test-Path (Join-Path $androidRoot $asset))) { throw 'Prepare the Android runtime before reusing it.' }
+    }
+} else {
+    & $node (Join-Path $PSScriptRoot 'prepare-android.mjs')
+    if ($LASTEXITCODE -ne 0) { throw 'Android preparation failed.' }
+}
 Set-Location $nativeRoot
 $buildArgs = @($tauriCli, 'android', 'build', '--target', $Target, '--apk') + $profileFlag + $configFlag
 $previousErrorAction = $ErrorActionPreference

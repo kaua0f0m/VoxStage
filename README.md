@@ -166,6 +166,10 @@ dependencies. Choose a project license before offering permission to reuse the
 VoxStage code; third-party licenses remain applicable.
 
 
+## Novidades da 1.1.1
+
+Pontuação mais compacta no Android em paisagem, filtro do microfone ajustável durante o canto e motor JavaScript do YouTube integrado no Android/Google TV. Recomendo fones para evitar que a música encubra sua voz ou conte como canto. Veja os ajustes e a nota sobre a experiência no celular no [changelog](CHANGELOG.md).
+
 ## Novidades da 1.1
 
 - Pontuação de canto com notas sustentadas, microfone local, referências por ambos os vocais ou pelas três trilhas, início automático da música e histórico local.
@@ -181,9 +185,9 @@ O [changelog](CHANGELOG.md) reúne as novidades das versões públicas.
 
 ### Pacotes atuais
 
-Os caminhos 1.0.2 citados acima são da primeira versão pública. Para a **1.1 (1.1.0)**, os pacotes são:
+Os caminhos 1.0.2 citados acima são da primeira versão pública. Para a **1.1.1**, os pacotes são:
 
-- Windows x64: `releases/V1.1.0/VoxStage-1.1.0-Windows-x64.zip`.
-- Android e Google TV ARM64: `releases/V1.1.0/VoxStage-1.1.0-Android-GoogleTV-ARM64.apk`.
+- Windows x64: `releases/V1.1.1/VoxStage-1.1.1-Windows-x64.zip`.
+- Android e Google TV ARM64: `releases/V1.1.1/VoxStage-1.1.1-Android-GoogleTV-ARM64.apk`.
 
-Baixe ambos na [release 1.1](https://github.com/kaua0f0m/VoxStage/releases/tag/v1.1.0). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.
+Baixe ambos na [release 1.1.1](https://github.com/kaua0f0m/VoxStage/releases/tag/v1.1.1). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.
