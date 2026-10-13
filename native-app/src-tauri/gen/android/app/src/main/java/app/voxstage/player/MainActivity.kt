@@ -32,6 +32,7 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     VoxStageMediaControls.attach(this, webView)
+    VoxStageMicrophone.attach(this, webView)
     if (VoxStageMediaControls.isTelevision(this)) { webView.isFocusableInTouchMode = true; webView.requestFocus() }
   }
 
@@ -57,7 +58,15 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    VoxStageMicrophone.detach()
     VoxStageMediaControls.detach(this)
     super.onDestroy()
   }
+
+  override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    VoxStageMicrophone.permissionResult(requestCode, grantResults.firstOrNull()==PackageManager.PERMISSION_GRANTED)
+  }
+
+  override fun onStop() { VoxStageMicrophone.background();super.onStop() }
 }

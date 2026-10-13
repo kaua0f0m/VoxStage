@@ -24,18 +24,76 @@ const server = http.createServer((req,res) => {
   if(url.pathname === '/cover.svg') { res.writeHead(200,{'Content-Type':'image/svg+xml'}); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#d4fb69"/></svg>'); return; }
   const filename = path.resolve(root, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
   if(!filename.startsWith(root + path.sep)) {res.writeHead(403);res.end();return;}
-  fs.readFile(filename,(error,data)=>{res.writeHead(error?404:200,{'Content-Type':filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':filename.endsWith('.ttf')?'font/ttf':'text/html'});res.end(error?'Not found':data)});
+    fs.readFile(filename,(error,data)=>{res.writeHead(error?404:200,{'Content-Type':filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':filename.endsWith('.svg')?'image/svg+xml':filename.endsWith('.json')?'application/json':filename.endsWith('.ttf')?'font/ttf':'text/html'});res.end(error?'Not found':data)});
 });
 async function main() {
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch({headless:true,channel:'msedge'});
+  const browser = await chromium.launch({headless:true,channel:'msedge',args:['--mute-audio']});
   const errors = [];
   try {
     const desktop = await browser.newContext({viewport:{width:1280,height:820}});
     await desktop.addInitScript(()=>localStorage.setItem('voxstage-onboarding-hidden','1'));
     const page = await desktop.newPage(); page.on('pageerror',error=>errors.push(error.message));
     await page.goto(origin); await page.waitForFunction(()=>window.__voxstageUiReady);
+    await page.evaluate(()=>settingsDialog.classList.add('show'));
+    await page.locator('[data-settings-tab="about"]').click();
+    await page.waitForFunction(()=>document.getElementById('aboutAppVersion').textContent===window.VoxStageBuildInfo.label);
+    assert.equal(await page.locator('#settingsTabAbout').getAttribute('aria-selected'),'true');
+    assert.equal(await page.locator('.about-app a').nth(0).getAttribute('href'),'https://github.com/kaua0f0m');
+    assert.equal(await page.locator('.about-app a').nth(1).getAttribute('href'),'https://www.youtube.com/@funkyblackcat');
+    assert.equal(await page.locator('.about-credits').evaluate(node=>node.open),false,'Credits stay collapsed');
+    await page.waitForFunction(()=>document.querySelector('.about-app img').naturalWidth>0);
+    await page.route('**/build-info.json',route=>route.fulfill({json:{label:'1.1 snapshot 999'}}));
+    await page.evaluate(()=>refreshAboutVersion());
+    assert.equal(await page.locator('#aboutAppVersion').textContent(),'1.1 snapshot 999','About reads fresh deployment metadata');
+    await page.unroute('**/build-info.json');
+    await page.evaluate(()=>refreshAboutVersion());
+    assert.equal(await page.locator('#aboutAppVersion').textContent(),await page.evaluate(()=>VoxStageBuildInfo.label));
+    await page.screenshot({path:path.join(artifacts,'about-desktop.png')});
+    await page.locator('[data-settings-tab="playback"]').click();
+    const playbackText=await page.locator('#settingsPanePlayback').textContent();
+    fs.writeFileSync(path.join(artifacts,'rc-playback-text.txt'),playbackText);
+    assert.doesNotMatch(playbackText,/2\.0|Em preparação|Indisponível|Windows.*experimental/i);
+    assert.equal(await page.locator('#settingsPanePlayback #scoreOpenSettings').count(),0);
+    assert.equal(await page.locator('#settingsPanePlayback .playback-transform').count(),0);
+    assert.equal(await page.locator('#settingsTabDebug').isVisible(),await page.evaluate(()=>isDiagnosticBuild(VoxStageBuildInfo)));
+    await page.evaluate(()=>updateDebugAvailability({version:'1.1.0-rc.3',label:'1.1 RC-3'}));
+    await page.locator('[data-settings-tab="debug"]').click();
+    assert.equal(await page.locator('#settingsPaneDebug #scoreOpenSettings').isVisible(),true);
+    assert.equal(await page.locator('#settingsPaneDebug .playback-transform').isVisible(),true);
+    await page.evaluate(()=>updateDebugAvailability({version:'1.1.0',label:'1.1.0'}));
+    assert.equal(await page.locator('#settingsTabDebug').isVisible(),false);
+    assert.equal(await page.locator('#settingsTabPlayback').getAttribute('aria-selected'),'true');
+    await page.evaluate(()=>selectSettingsTab('debug'));
+    assert.equal(await page.locator('#settingsTabPlayback').getAttribute('aria-selected'),'true','Stable cannot select Debug');
+    for(const info of [{version:'1.1.0-snapshot.6'},{label:'1.1 snapshot 6'},{version:'1.1.0-rc.2'},{version:'1.1.0-test.1'}]) {
+      await page.evaluate(info=>updateDebugAvailability(info),info);
+      assert.equal(await page.locator('#settingsTabDebug').isVisible(),true);
+    }
+    await page.evaluate(()=>{nativeDebugBuild=true;updateDebugAvailability({version:'1.1.0',label:'1.1.0'});});
+    assert.equal(await page.locator('#settingsTabDebug').isVisible(),true,'Native debug builds show Debug even with stable metadata');
+    await page.evaluate(()=>{nativeDebugBuild=false;updateDebugAvailability();selectSettingsTab('about');window.__TAURI__={core:{invoke:async()=>false}};});
+    const openedLinks=[];
+    await page.route('**/api/about/open-link',route=>{openedLinks.push(route.request().postDataJSON().url);return route.fulfill({json:{opened:true}});});
+    let popups=0;page.on('popup',()=>popups++);
+    for(const link of ['https://github.com/kaua0f0m','https://www.youtube.com/@funkyblackcat']) {
+      const response=page.waitForResponse(response=>response.url().endsWith('/api/about/open-link'));
+      await page.locator(`.about-app a[href="${link}"]`).click();
+      await response;
+    }
+    assert.deepEqual(openedLinks,['https://github.com/kaua0f0m','https://www.youtube.com/@funkyblackcat']);
+    assert.equal(popups,0,'Native About links dispatch to OS instead of WebView popups');
+    await page.evaluate(()=>delete window.__TAURI__);
+    await page.evaluate(()=>{
+      const stars=document.createElement('div');stars.id='starColorTest';stars.className='score-stars';
+      stars.innerHTML='<span class="earned">★</span>';document.body.append(stars);
+    });
+    assert.equal(await page.locator('#starColorTest .earned').evaluate(node=>getComputedStyle(node).color),'rgb(255, 255, 255)');
+    await page.locator('#starColorTest').evaluate(node=>node.classList.add('gold'));
+    assert.equal(await page.locator('#starColorTest .earned').evaluate(node=>getComputedStyle(node).color),'rgb(255, 206, 86)');
+    await page.locator('#starColorTest').evaluate(node=>node.remove());
+    await page.evaluate(()=>settingsDialog.classList.remove('show'));
     assert.equal(await page.locator('.settings-tabs').evaluate(node=>getComputedStyle(node).flexDirection),'column');
     assert.equal(await page.locator('[data-settings-tab="local"]').getAttribute('hidden'),null);
     assert.doesNotMatch(await page.locator('#modal').textContent(),/próxima etapa|disponíveis em breve/);
@@ -69,11 +127,136 @@ async function main() {
     assert.equal(await page.locator('#volLead').isVisible(),true);
     await page.evaluate(()=>pausePlayback());
     await page.locator('#addTop').click();
+    let metadataRequests=0;
+    await page.route('**/api/youtube/metadata',route=>{
+      metadataRequests++;
+      return route.fulfill({status:metadataRequests===1?503:200,contentType:'application/json',body:JSON.stringify(metadataRequests===1?{error:'O YouTube bloqueou temporariamente as consultas.'}:{title:'Machine Love',artist:'Jamie Paige',album:'DAEMON/DOLL',duration:217})});
+    });
+    const metadataChecks=await page.evaluate(async()=>{
+      const item={url:'https://music.youtube.com/watch?v=NKSqoIGYzGY',title:'Machine Love',metadataState:'pending',artistLabel:document.createElement('small'),albumLabel:document.createElement('small')};
+      document.body.append(item.artistLabel,item.albumLabel);
+      renderYoutubeMetadata(item);
+      const pending=item.artistLabel.textContent;
+      await ensureYoutubeMetadata(item).catch(()=>{});
+      const failed=item.artistLabel.textContent;
+      const retryAllowed=item.metadataPromise===null;
+      await ensureYoutubeMetadata(item);
+      const retried=item.artistLabel.textContent;
+      const cached=await ensureYoutubeMetadata({url:item.url});
+      await ensureYoutubeMetadata({url:'complete-catalog',artist:'Known artist',album:'Known album'});
+      await enrichYoutubeMetadata([{url:'stale-search'}],youtubeSearchSequence-1);
+      item.artistLabel.remove();item.albumLabel.remove();
+      return {pending,failed,retryAllowed,retried,cached:cached.album};
+    });
+    assert.equal(metadataChecks.pending,'Buscando artista…');
+    assert.equal(metadataChecks.failed,'Não foi possível consultar o artista');
+    assert.equal(metadataChecks.retryAllowed,true);
+    assert.equal(metadataChecks.retried,'Jamie Paige');
+    assert.equal(metadataChecks.cached,'DAEMON/DOLL');
+    assert.equal(metadataRequests,2,'Catalog results, cache and stale searches must not open more videos');
+    await page.unroute('**/api/youtube/metadata');
+    let blockedRequests=0;
+    await page.route('**/api/youtube/metadata',route=>{
+      blockedRequests++;
+      return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'O YouTube bloqueou temporariamente as consultas.'})});
+    });
+    const blockedChecks=await page.evaluate(async()=>{
+      const items=Array.from({length:4},(_,index)=>({url:`blocked-${index}`}));
+      await enrichYoutubeMetadata(items,youtubeSearchSequence);
+      return items.every(item=>item.metadataState==='error'&&item.metadataError.includes('bloqueou temporariamente'));
+    });
+    assert.equal(blockedChecks,true);
+    assert.equal(blockedRequests,1,'A bot block must stop further automatic video queries');
+    await page.unroute('**/api/youtube/metadata');
     await page.locator('#titleInput').fill('Capa');
     await page.locator('#artworkSearchOpen').click();
     await page.locator('[data-art-role="both"]').click();
     assert.equal(await page.locator('.artwork-dialog').isVisible(),false);
     await page.waitForFunction(()=>chosenFiles.some(file=>file.role==='cover') && chosenFiles.some(file=>file.role==='background'));
+    await page.evaluate(()=>{
+      $('titleInput').value=''; $('artistInput').value=''; $('youtubeQuery').value='Nome pesquisado';
+      const draftId=captureUploadDraft().id;
+      prefillYoutubeDraft({},draftId);
+      if($('titleInput').value!=='Nome pesquisado')throw new Error('Busca não preencheu título vazio');
+      $('titleInput').value='Título escolhido'; $('artistInput').value='';
+      prefillYoutubeDraft({title:'Metadado',artist:'Cantor escolhido'},draftId);
+    });
+    assert.equal(await page.locator('#titleInput').inputValue(),'Título escolhido');
+    assert.equal(await page.locator('#artistInput').inputValue(),'Cantor escolhido');
+    await page.evaluate(()=>{
+      updateUploadActivity({id:'received',draftId:activeUploadDraftId,stage:'done',files:[
+        {name:'received-inst.wav',role:'inst'},{name:'received-lead.wav',role:'lead'}]},true,'',false);
+      uploadActivityButton.click();
+    });
+    await page.locator('.upload-activity-attach').click();
+    await page.evaluate(()=>{
+      chosenFiles.find(file=>file.name==='received-lead.wav').role='back';
+      recoverReceivedMvsepFiles();
+    });
+    assert.equal(await page.evaluate(()=>chosenFiles.filter(file=>file.name==='received-inst.wav').length),1);
+    assert.equal(await page.evaluate(()=>chosenFiles.find(file=>file.name==='received-lead.wav').role),'back');
+    assert.equal(await page.locator('#titleInput').inputValue(),'Título escolhido');
+    let retrySearches=0, cancelSearches=0;
+    await page.route('https://lrclib.net/api/search?*',async route=>{
+      const query=new URL(route.request().url()).searchParams.get('q');
+      if(query.includes('cancelado')) { cancelSearches++; return route.fulfill({status:503,body:'Unavailable'}); }
+      if(query.includes('Retry') && ++retrySearches<3) return route.fulfill({status:503,body:'Unavailable'});
+      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify([{trackName:query,artistName:'Cantor',plainLyrics:'Uma letra'}])});
+    });
+    await page.evaluate(()=>{$('titleInput').value='Retry';$('artistInput').value='';openLyricsDialog('draft');});
+    await page.waitForFunction(()=>document.querySelector('#lyricsResults .lyrics-result'));
+    assert.equal(retrySearches,3);
+    assert.match(await page.locator('#lyricsResults').textContent(),/Retry/);
+    await page.evaluate(()=>{$('lyricsQuery').value='Retry cancelado';void searchLyrics(false);closeLyricsDialog();});
+    await page.waitForTimeout(1100);
+    assert.equal(retrySearches,3);
+    assert.ok(cancelSearches<=1,'Busca cancelada não deve repetir o pedido');
+    await page.evaluate(()=>{
+      const silent={sampleRate:1000,duration:100,getChannelData:()=>new Float32Array(100000)};
+      display.classList.add('show');
+      current={id:'chorus',buffers:{Inst:silent,Lead:silent},lyricLines:[
+        {time:38390,text:'Refrão continua mesmo no instrumental'},
+        {time:40930,text:'Outra linha do refrão'},
+        {time:65000,text:'Última linha'}],wordTimings:[],manualVocalSilences:[],
+        vocalSilenceState:{quietSince:36,lastPosition:38.9,silent:true}};
+      updateLyrics(39);
+    });
+    assert.equal(await page.locator('#lyricWordMarker i').isVisible(),true);
+    assert.equal(await page.locator('#lyricPauseIndicator').isVisible(),false);
+    await page.evaluate(()=>{current.manualVocalSilences=[{startMs:36000,endMs:80000}];updateLyrics(39);});
+    assert.equal(await page.locator('#lyricWordMarker i').isVisible(),true);
+    await page.evaluate(()=>updateLyrics(75));
+    assert.equal(await page.locator('#lyricWordMarker i').isVisible(),false);
+    assert.equal(await page.locator('#lyricPauseIndicator').isVisible(),true);
+    assert.equal(await page.locator('#lyricCurrentLine').isVisible(),true);
+    assert.equal(await page.evaluate(()=>{
+      current.lyricLines=[{time:1000,text:'Um trecho com tempos reais'}];
+      current.wordTimings=[{lineIndex:0,words:[{word:'Um',start:1,end:1.4},{word:'trecho',start:1.5,end:2}]}];
+      return hasLyricTrackingNear(1950) && !hasLyricTrackingNear(3000);
+    }),true);
+    console.log('PASS 1.1: autofill, acoplar sem duplicação, busca instantânea/503/cancelamento e silêncio sem ocultar letra.');
+    await page.evaluate(async()=>{await playSong(songs[1].id);await setPlaybackTransform(1.25,4);});
+    await page.waitForTimeout(700);
+    assert.equal(await page.evaluate(()=>current.engine.speed),1.25);
+    assert.equal(await page.evaluate(()=>current.engine.processor.parameters.get('pitchSemitones').value),4);
+    const clockStart=await page.evaluate(()=>playbackPosition());
+    await page.waitForTimeout(400);
+    const clockDelta=(await page.evaluate(()=>playbackPosition()))-clockStart;
+    assert.ok(clockDelta>.35 && clockDelta<.7,`Relógio em 1.25x: ${clockDelta}`);
+    await page.evaluate(()=>{pausePlayback();seek(500);});
+    assert.equal(await page.evaluate(()=>playbackPosition()),15);
+    await page.evaluate(async()=>{await setPlaybackTransform(.75,-4);startAudioSources(playbackBase);});
+    assert.equal(await page.evaluate(()=>current.engine.speed),.75);
+    await page.evaluate(async()=>{await setPlaybackTransform(1,0);});
+    assert.equal(await page.evaluate(()=>Boolean(current.engine.processor)),false);
+    assert.equal(await page.locator('.playback-transform').count(),2);
+    await page.evaluate(async()=>{
+      pausePlayback();current.buffers={Inst:audioContext.createBuffer(1,Math.round(audioContext.sampleRate*.4),audioContext.sampleRate)};
+      await setPlaybackTransform(1.25,4);startAudioSources(0);
+    });
+    await page.waitForFunction(()=>current.engine.finishTimer && playing && playbackPosition()>=current.buffers.Inst.duration,{},{polling:'raf'});
+    await page.waitForFunction(()=>!playing);
+    console.log('PASS velocidade/tom: processador único, relógio, pausa/seek, -4/+4 e restauração sem DSP.');
     await desktop.close();
     console.log('PASS PC: faixa completa/stems, ocultar manual, 5s, hover e capa.');
 
@@ -98,9 +281,20 @@ async function main() {
     },{complete,stems});
     const mobile = await context.newPage(); mobile.on('pageerror',error=>errors.push(error.message));
     await mobile.goto(origin); await mobile.waitForFunction(()=>window.__voxstageUiReady);
+    await mobile.locator('.setup-wizard.show').waitFor();
+    await mobile.evaluate(()=>document.querySelector('.setup-wizard').classList.remove('show'));
+    await mobile.evaluate(()=>settingsDialog.classList.add('show'));
+    await mobile.locator('[data-settings-tab="about"]').click();
+    await mobile.waitForFunction(()=>document.querySelector('.about-app img').naturalWidth>0);
+    assert.equal(await mobile.locator('#aboutAppVersion').textContent(),await mobile.evaluate(()=>VoxStageBuildInfo.label));
+    assert.ok(await mobile.locator('.about-app').evaluate(node=>node.scrollWidth<=node.clientWidth),'About fits the narrow settings pane');
+    await mobile.screenshot({path:path.join(artifacts,'about-android.png')});
+    await mobile.locator('[data-settings-tab="playback"]').click();
+    await mobile.evaluate(()=>settingsDialog.classList.remove('show'));
     assert.equal(await mobile.locator('[data-settings-tab="local"]').evaluate(node=>node.hidden),true);
     assert.equal(await mobile.locator('.mobile-ytdlp-settings').count(),0);
     assert.equal(await mobile.locator('#syncPcLibrary').textContent(),'▣ Conectar ao VoxStage');
+    await mobile.evaluate(()=>document.querySelector('.setup-wizard').classList.add('show'));
     await mobile.locator('#mobileMvsepHelp').click();
     assert.equal(await mobile.locator('.mvsep-help-dialog').isVisible(),true);
     await mobile.screenshot({path:path.join(artifacts,'android-key-help.png')});
@@ -193,6 +387,16 @@ async function main() {
     await remote.waitForFunction(()=>document.getElementById('tvMvsepStatus').textContent.includes('Chave salva'));
     assert.equal(await remote.evaluate(()=>token),'12345678901234567890123456789012');
     console.log('PASS controle web: formulário de envio da chave à TV.');
+    const development=await browser.newContext();
+    await development.addInitScript(()=>{localStorage.setItem('voxstage-onboarding-hidden','1');window.__TAURI__={core:{invoke:async()=>false}};});
+    const devPage=await development.newPage();devPage.on('pageerror',error=>errors.push(error.message));
+    await devPage.route('**/api/build-mode',route=>route.fulfill({json:{debug:true}}));
+    await devPage.goto(origin);await devPage.waitForFunction(()=>window.VoxStageScoring);
+    await devPage.evaluate(()=>settingsDialog.classList.add('show'));
+    await devPage.locator('#settingsTabDebug').waitFor({state:'visible'});
+    await devPage.locator('#settingsTabAbout').click();await devPage.waitForFunction(()=>document.getElementById('aboutAppVersion').textContent===VoxStageBuildInfo.label);
+    assert.equal(await devPage.locator('#settingsTabDebug').isVisible(),true,'Development backend exposes Debug with stable metadata');
+    await development.close();
     assert.deepEqual(errors,[]);
   } finally { await browser.close(); server.close(); }
 }

@@ -40,6 +40,13 @@ body.android-tv-app #display .stage-playback button{width:48px;height:48px}
 body.android-tv-app #display .stage-playback #dispPlay{width:56px;height:56px}
 body.android-tv-app #display .stage-tools-start .hud-btn,body.android-tv-app #display .stage-tools-end .hud-btn{height:44px;font-size:14px;padding:0 13px}
 body.android-tv-app #display .stage-action-label{display:inline!important}
+/* TV keeps the complete transport in one row instead of the touch grid. */
+body.android-tv-app #display .stage-controls{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:clamp(8px,1.3vw,18px);flex-wrap:wrap}
+body.android-tv-app #display .stage-tools-start{order:1}
+body.android-tv-app #display .stage-playback{order:2}
+body.android-tv-app #display .stage-performance-tools{order:3;flex:0 0 auto}
+body.android-tv-app #display .stage-tools-end{order:4}
+body.android-tv-app #display .stage-performance-tools :is([data-speed-open],#scoreOpen){min-height:42px!important;height:42px!important;font-size:12px!important}
 body.android-tv-app .modal,body.android-tv-app .processing-card{max-width:950px;max-height:85dvh;border-radius:20px;padding:28px;font-size:16px}
 body.android-tv-app .modal-back{align-items:center;padding:4vh 5vw}
 body.android-tv-app :is(.processing-card,.modal,.remote-card,.lyrics-dialog-card) button{min-height:42px;font-size:14px}

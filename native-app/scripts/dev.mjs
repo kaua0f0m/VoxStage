@@ -73,6 +73,7 @@ const backend = spawn(isWindows ? 'py' : (process.env.PYTHON || 'python3'), back
     ...process.env,
     VOXSTAGE_HOST: '0.0.0.0',
     VOXSTAGE_PORT: String(port),
+    VOXSTAGE_DEBUG_BUILD: '1',
     // Keep browser data untouched. Media starts as hard-linked copies where possible.
     VOXSTAGE_DATA_DIR: devData,
   },

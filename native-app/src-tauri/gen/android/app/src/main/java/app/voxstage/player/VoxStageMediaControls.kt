@@ -176,6 +176,11 @@ object VoxStageMediaControls {
   }
 
   private class Bridge {
+    @JavascriptInterface fun openAuthorLink(url: String) {
+      if(url !in listOf("https://github.com/kaua0f0m", "https://www.youtube.com/@funkyblackcat"))return
+      val host=activity ?: return
+      host.runOnUiThread { try { host.startActivity(Intent(Intent.ACTION_VIEW,android.net.Uri.parse(url))) } catch(_:android.content.ActivityNotFoundException) {} }
+    }
     @JavascriptInterface fun openMvsepApi() {
       val host = activity ?: return
       host.runOnUiThread {

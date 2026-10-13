@@ -53,6 +53,8 @@ remote_commands = []
 remote_commands_lock = threading.Lock()
 remote_state = {"songId": None, "title": "", "artist": "", "playing": False, "time": 0, "duration": 0}
 remote_state_lock = threading.Lock()
+from phone_microphone import PhoneMicrophone
+remote_microphone = PhoneMicrophone()
 remote_transfers = {}
 remote_transfers_lock = threading.Lock()
 REMOTE_MEDIA_FIELDS = ("source", "inst", "lead", "back", "cover", "background", "backgroundVideo")
@@ -302,6 +304,60 @@ def youtube_js_runtime_options():
     return {"js_runtimes": runtimes} if runtimes else {}
 
 
+def youtube_error_message(error):
+    detail = str(error).lower()
+    if "not a bot" in detail or "confirm you're" in detail or "confirm you’re" in detail:
+        return "O YouTube bloqueou temporariamente as consultas e pediu confirmação de que você não é um bot. Aguarde alguns minutos e tente novamente."
+    if "429" in detail or "too many requests" in detail:
+        return "O YouTube limitou as solicitações por enquanto. Aguarde alguns minutos e tente novamente."
+    if "private video" in detail or "sign in" in detail or "members-only" in detail:
+        return "Este vídeo exige acesso ou login no YouTube e não pode ser importado agora."
+    if "video unavailable" in detail or "not available" in detail:
+        return "O YouTube não disponibilizou esta faixa para importação agora. Tente novamente mais tarde ou escolha outro resultado."
+    return "Não consegui consultar ou baixar esta faixa no YouTube. Confira sua conexão e tente novamente."
+
+
+def youtube_catalog_fields(renderer):
+    """Keep the metadata already present in Music search, without opening videos."""
+    artists, album, duration = [], "", None
+    for column in renderer.get("flexColumns") or []:
+        runs = column.get("musicResponsiveListItemFlexColumnRenderer", {}).get("text", {}).get("runs", [])
+        for run in runs:
+            text = (run.get("text") or "").strip()
+            browse = run.get("navigationEndpoint", {}).get("browseEndpoint", {})
+            page = browse.get("browseEndpointContextSupportedConfigs", {}).get("browseEndpointContextMusicConfig", {}).get("pageType", "")
+            if page in {"MUSIC_PAGE_TYPE_ARTIST", "MUSIC_PAGE_TYPE_USER_CHANNEL"} and text and text not in artists:
+                artists.append(text)
+            elif page == "MUSIC_PAGE_TYPE_ALBUM":
+                album = text
+            elif not browse and re.fullmatch(r"\d{1,3}:\d{2}(?::\d{2})?", text):
+                duration = 0
+                for component in text.split(":"):
+                    duration = duration * 60 + int(component)
+    images = renderer.get("thumbnail", {}).get("musicThumbnailRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
+    return {"artist": ", ".join(artists), "album": album, "duration": duration, "thumbnails": images}
+
+
+def preserve_youtube_catalog_metadata(downloader):
+    # yt-dlp's Music search adapter currently retains only title/id. Override
+    # this adapter per downloader; leave video extraction and other searches alone.
+    try:
+        from yt_dlp.extractor.youtube import YoutubeMusicSearchURLIE as BaseSearch
+    except ImportError:
+        return
+    if not hasattr(BaseSearch, "_music_reponsive_list_entry"):
+        return
+
+    class YoutubeMusicSearchURLIE(BaseSearch):
+        def _music_reponsive_list_entry(self, renderer):
+            entry = super()._music_reponsive_list_entry(renderer)
+            if entry and renderer.get("playlistItemData", {}).get("videoId"):
+                entry.update({key: value for key, value in youtube_catalog_fields(renderer).items() if value})
+            return entry
+
+    downloader.add_info_extractor(YoutubeMusicSearchURLIE(downloader))
+
+
 def youtube_search(query, include_youtube=False):
     try:
         import yt_dlp
@@ -319,6 +375,7 @@ def youtube_search(query, include_youtube=False):
         targets.append((f"ytsearch5:{query}", "youtube"))
     entries = []
     with yt_dlp.YoutubeDL(options) as downloader:
+        preserve_youtube_catalog_metadata(downloader)
         seen_ids = set()
         for target, source in targets:
             try:
@@ -491,7 +548,7 @@ def _mvsep_file_entries(files):
         if "vocalsfull" in lowered:
             role = "ignore"
         elif "instrumentalonly" in lowered or "instrumonly" in lowered:
-            role = "ignore"
+            role = "inst"
         elif "vocalslead" in lowered or "lead" in lowered:
             role = "lead"
         elif "vocalsback" in lowered or "backing" in lowered or ("back" in lowered and "instrum" not in lowered):
@@ -503,6 +560,10 @@ def _mvsep_file_entries(files):
         else:
             role = "ignore"
         outputs.append({"label": label, "url": link, "role": role})
+    if any(entry["role"] == "inst" and "only" in re.sub(r"[^a-z]", "", entry["label"].lower()) for entry in outputs):
+        for entry in outputs:
+            if entry["role"] == "inst" and "only" not in re.sub(r"[^a-z]", "", entry["label"].lower()):
+                entry["role"] = "ignore"
     return outputs
 
 
@@ -637,8 +698,8 @@ def youtube_mvsep_worker(job_id, video_url, model_id, model_options, source_song
         detail = str(error).lower()
         if "javascript" in detail or "deno" in detail or "ejs" in detail:
             message = "O yt-dlp precisa de um runtime JavaScript. Instale o Deno e tente novamente."
-        elif "private video" in detail or "sign in" in detail or "members-only" in detail:
-            message = "Este vídeo exige acesso ou login no YouTube e não pode ser importado agora."
+        elif "private video" in detail or "sign in" in detail or "members-only" in detail or "not a bot" in detail:
+            message = youtube_error_message(error)
         elif "unsupported url" in detail or "not a valid url" in detail:
             message = "Não consegui reconhecer esse link do YouTube. Confira o endereço e tente novamente."
         elif "429" in detail or "too many requests" in detail:
@@ -1168,6 +1229,10 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if not self._allow_network_route():
             return self.send_error(403, "LAN access is limited to the paired remote control")
+        if urlparse(self.path).path == "/api/build-mode":
+            if not self._is_loopback():
+                return self.send_error(403)
+            return self.send_json({"debug": os.environ.get("VOXSTAGE_DEBUG_BUILD") == "1"})
         path = unquote(urlparse(self.path).path)
         if path in {"/remote", "/remote/"}:
             remote_page = (ROOT / "remote.html").read_bytes()
@@ -1255,6 +1320,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             with remote_state_lock:
                 return self.send_json(dict(remote_state))
+        if path == "/api/remote/microphone":
+            if not self._require_remote_token():
+                return
+            return self.send_json(remote_microphone.status())
+        if path == "/api/remote/microphone/frames":
+            if not self._is_loopback():
+                return self.send_error(403)
+            return self.send_json(remote_microphone.drain())
         remote_request_match = re.fullmatch(r"/api/remote/request/([a-f0-9-]{36})", path, re.I)
         if remote_request_match:
             if not self._require_remote_token():
@@ -1431,6 +1504,36 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._allow_network_route():
             return self.send_error(403, "LAN access is limited to the paired remote control")
         parsed_path = urlparse(self.path).path
+        if parsed_path == "/api/about/open-link":
+            if not self._is_loopback():
+                return self.send_error(403)
+            try:
+                url = self._read_remote_json(1024).get("url")
+                if url not in {"https://github.com/kaua0f0m", "https://www.youtube.com/@funkyblackcat"}:
+                    raise ValueError("Link de atribuição inválido.")
+                if sys.platform == "win32":
+                    os.startfile(url)
+                else:
+                    import webbrowser
+                    if not webbrowser.open_new_tab(url):
+                        raise OSError("Nenhum navegador disponível.")
+                return self.send_json({"opened": True})
+            except (ValueError, TypeError, AttributeError, OSError) as error:
+                return self.send_json({"error": str(error)}, 400)
+        if parsed_path in ("/api/remote/microphone", "/api/remote/microphone/session"):
+            if parsed_path.endswith('/session'):
+                if not self._is_loopback():
+                    return self.send_error(403)
+            elif not self._require_remote_token():
+                return
+            try:
+                body = self._read_remote_json()
+                if not isinstance(body, dict):
+                    raise ValueError("Pacote inválido.")
+                result = remote_microphone.configure(body) if parsed_path.endswith('/session') else remote_microphone.receive(body)
+                return self.send_json(result)
+            except (ValueError, TypeError, AttributeError, json.JSONDecodeError) as error:
+                return self.send_json({"error": str(error)}, 400)
         if parsed_path == "/api/remote/transfers":
             if not self._require_remote_token():
                 return
@@ -1514,6 +1617,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not self._is_loopback():
                 return self.send_error(403)
             REMOTE_TOKEN = secrets.token_urlsafe(24)
+            remote_microphone.configure({"session": None})
             with remote_commands_lock:
                 remote_commands.clear()
             return self.send_json({"rotated": True})
@@ -1738,6 +1842,8 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as error:
                 traceback.print_exc()
                 message = "Não consegui buscar capas agora. Confira sua conexão e tente novamente." if parsed_path == "/api/covers/search" else "Não consegui baixar esta capa. Faça uma nova busca e tente novamente." if parsed_path == "/api/covers/download" else "Não foi possível buscar resultados no YouTube agora. Confira sua conexão e tente novamente." if parsed_path == "/api/youtube/search" else "Não foi possível iniciar a integração YouTube/MVSep. Confira as configurações e tente novamente."
+                if parsed_path in {"/api/youtube/search", "/api/youtube/metadata"}:
+                    return self.send_json({"error": youtube_error_message(error)}, 503)
                 return self.send_json({"error": message}, 500)
         align_match = re.fullmatch(r"/api/align/([a-f0-9-]{36})", parsed_path, re.I)
         if align_match:

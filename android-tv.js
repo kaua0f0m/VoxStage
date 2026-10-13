@@ -1,14 +1,19 @@
 // TV uses the same library and audio engine, with navigation for a D-pad.
 if (androidTv) (() => {
   document.body.classList.add('android-tv-app');
-  const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'android-tv.css?v=20261011-1'; document.head.append(css);
+  const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'android-tv.css?v=1.1-rc-3'; document.head.append(css);
   try { window.VoxStageMedia?.setOrientation('landscape'); } catch {}
   const stage = $('display'); stage.classList.add('mobile-stage-tv');
   let libraryFocusId = null;
   let previousLayer = null;
   const visible = element => element && !element.disabled && !element.closest('[hidden],[inert]') && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden';
   function layer() {
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"],.remote-panel.show,.setup-wizard.show')).filter(visible);
+    // Native modal dialogs live in the browser top layer, above CSS z-index.
+    const modal = Array.from(document.querySelectorAll('dialog[open]')).filter(visible).at(-1);
+    if (modal) return modal;
+    const transform = $('playbackTransformPopup');
+    if (visible(transform)) return transform;
+    const dialogs = Array.from(document.querySelectorAll('dialog[open],[role="dialog"],.remote-panel.show,.setup-wizard.show')).filter(visible);
     const z = element => { let max = 0; for (let node = element; node; node = node.parentElement) max = Math.max(max, Number.parseInt(getComputedStyle(node).zIndex) || 0); return max; };
     dialogs.sort((a,b) => z(a) - z(b));
     return dialogs.at(-1) || (stage.classList.contains('show') ? stage : document.body);
@@ -57,6 +62,11 @@ if (androidTv) (() => {
 
   function back() {
     const root = layer();
+    if (root?.classList.contains('playback-transform-popup')) {
+      if (root.hidePopover && root.matches(':popover-open')) root.hidePopover();
+      root.classList.remove('popup-fallback-open');
+      focus(stage.querySelector('[data-speed-open]')); return;
+    }
     if (root !== stage && root !== document.body) {
       const close = root.querySelector('.x,.lyrics-close,#closeManualSync,#closeProcessing,#remotePanelClose,.wizard-close,[data-close]');
       if (close) close.click();
@@ -87,7 +97,9 @@ if (androidTv) (() => {
     if (active?.matches('input[type="range"]') && ['ArrowLeft','ArrowRight'].includes(key)) {
       const step = Number(active.step) || 1;
       active.value = String(Math.max(Number(active.min) || 0, Math.min(Number(active.max) || 100, Number(active.value) + (key === 'ArrowRight' ? step : -step))));
-      active.dispatchEvent(new Event('input',{bubbles:true})); return true;
+      active.dispatchEvent(new Event('input',{bubbles:true}));
+      if (active.hasAttribute('data-playback-speed')) active.dispatchEvent(new Event('change',{bubbles:true}));
+      return true;
     }
     if (active?.matches('textarea,input:not([type="range"]):not([type="checkbox"]):not([type="radio"])') && ['ArrowLeft','ArrowRight'].includes(key)) return false;
     const rect = active.getBoundingClientRect(); const cx = rect.x + rect.width/2, cy = rect.y + rect.height/2;

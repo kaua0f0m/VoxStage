@@ -16,6 +16,10 @@ Its upstream build and source references are available from
 [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) and
 [FFmpeg](https://ffmpeg.org/download.html).
 
+## SoundTouchJS
+
+Real-time tempo and pitch use the AudioWorklet processor from [`@soundtouchjs/audio-worklet` 2.1.1](https://github.com/cutterbl/SoundTouchJS), copyright Steve “Cutter” Blades, distributed under MPL-2.0. The modified source, license and archive integrity are included in `audio/vendor`. VoxStage adds output buffering, tail drainage, delay metrics and processor shutdown; the pitch/stretch algorithms are unchanged.
+
 ## Audio Separator
 
 Optional local separation is powered by [`python-audio-separator`](https://github.com/nomadkaraoke/python-audio-separator), distributed under the MIT License. Its project documentation requests that applications integrating UVR models credit UVR and its developers.

@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "VoxStage",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "identifier": "app.voxstage.player",
   "build": {
     "devUrl": "http://127.0.0.1:8000",
     "frontendDist": "../web-dist",
-    "beforeBuildCommand": "node ./scripts/sync-frontend.mjs"
+    "beforeBuildCommand": "node ./scripts/sync-frontend.mjs --deploy"
   },
   "app": {
     "withGlobalTauri": true,
@@ -24,7 +24,9 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**"]
+        "scope": [
+          "$APPDATA/**"
+        ]
       },
       "csp": null
     }
@@ -32,8 +34,25 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
     "resources": {
+      "../../build-info.js": "app/build-info.js",
+      "../../build-info.json": "app/build-info.json",
+      "../../branding/voxstage-animated.svg": "app/branding/voxstage-animated.svg",
+      "../../audio/pitch-core.js": "app/audio/pitch-core.js",
+      "../../audio/pitch-worker.js": "app/audio/pitch-worker.js",
+      "../../audio/microphone-worklet.js": "app/audio/microphone-worklet.js",
+      "../../scoring.js": "app/scoring.js",
+      "../../scoring.css": "app/scoring.css",
+      "../../microphone-input.js": "app/microphone-input.js",
+      "../../phone-microphone.js": "app/phone-microphone.js",
+      "../../phone_microphone.py": "app/phone_microphone.py",
+      "../../audio/vendor/soundtouch-processor.js": "app/audio/vendor/soundtouch-processor.js",
+      "../../audio/vendor/LICENSE": "app/audio/vendor/LICENSE",
+      "../../audio/vendor/NOTICE.md": "app/audio/vendor/NOTICE.md",
       "../../fonts/Nunito-Variable.ttf": "app/fonts/Nunito-Variable.ttf",
       "../../fonts/OFL-Nunito.txt": "app/fonts/OFL-Nunito.txt",
       "../../server.py": "app/server.py",

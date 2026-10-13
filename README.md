@@ -164,3 +164,25 @@ See `MIGRACAO.md` for moving this local workspace. Online services require the
 user's own connection and MVSep key. See `THIRD_PARTY_NOTICES.md` for bundled
 dependencies. Choose a project license before offering permission to reuse the
 VoxStage code; third-party licenses remain applicable.
+
+
+## Novidades da 1.1
+
+- Pontuação de canto com notas sustentadas, microfone local, referências por ambos os vocais ou pelas três trilhas e histórico local.
+- Pontos cumulativos: 1.000 por nota acertada, sem perder pontos. Estrelas em 9/18/27/36/45%; cinco estrelas douradas em 55%.
+- Velocidade de 0,75× a 1,25× e tom de −4 a +4 semitons em tempo real, com letras e pontuação acompanhando os ajustes.
+- Celular conectado como microfone do PC/TV, além da captura nativa no Android. Essa integração ainda precisa de avaliação em aparelhos físicos.
+- Faixa de notas adaptada ao Android vertical/horizontal e à TV, com letras opcionais e controles compactos.
+- Preenchimento automático pelo YouTube, correções de metadados do YouTube Music, busca de letras ao abrir com recuperação de falhas 503 e botão Acoplar arquivos.
+- Aba Sobre com logo, versão por deploy, autor, inspiração e atribuições; controles de diagnóstico ficam fora da versão estável.
+
+O [changelog completo](CHANGELOG.md) descreve todas as mudanças desde a 1.0.2, as verificações realizadas e os limites atuais. A precisão da pontuação depende do mapa automático e da qualidade da separação dos vocais.
+
+### Pacotes atuais
+
+Os caminhos 1.0.2 citados acima são da primeira versão pública. Para a **1.1 (1.1.0)**, os pacotes são:
+
+- Windows x64: `releases/V1.1.0/VoxStage-1.1.0-Windows-x64.zip`.
+- Android e Google TV ARM64: `releases/V1.1.0/VoxStage-1.1.0-Android-GoogleTV-ARM64.apk`.
+
+Baixe ambos na [release 1.1](https://github.com/kaua0f0m/VoxStage/releases/tag/v1.1.0). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.

@@ -12,6 +12,7 @@ struct Host {
     commands: Vec<Value>,
     requests: Vec<Value>,
     transfers: HashMap<String, Value>,
+    microphone:super::phone_microphone::Microphone,
 }
 static HOST: OnceLock<Mutex<Option<Host>>> = OnceLock::new();
 fn storage() -> &'static Mutex<Option<Host>> { HOST.get_or_init(|| Mutex::new(None)) }
@@ -33,7 +34,7 @@ fn start(app: &AppHandle) -> Result<(), String> {
     let listener = TcpListener::bind("0.0.0.0:8000").map_err(|error| format!("Não consegui abrir o controle da TV na porta 8000: {error}"))?;
     let path = app.path().app_data_dir().map_err(|error| error.to_string())?.join("library.json");
     *guard = Some(Host {app:app.clone(), token:new_token(), address:lan_address(), library_path:path,
-        state:json!({"playing":false,"title":"","artist":"","hostType":"tv"}),commands:vec![],requests:vec![],transfers:HashMap::new()});
+        state:json!({"playing":false,"title":"","artist":"","hostType":"tv"}),commands:vec![],requests:vec![],transfers:HashMap::new(),microphone:super::phone_microphone::Microphone::default()});
     if let Err(error) = std::thread::Builder::new().name("voxstage-tv-remote".into()).spawn(move || {
         for stream in listener.incoming().flatten() { serve(stream); }
     }) { *guard = None; return Err(error.to_string()); }
@@ -140,6 +141,8 @@ fn finish_transfer(host: &mut Host, id: &str) -> Result<Value, String> {
 }
 fn public_api(host: &mut Host, path: &str, method: &str, body: Value) -> (u16, Value) {
     match (method, path) {
+        ("GET","/api/remote/microphone") => (200,host.microphone.status()),
+        ("POST","/api/remote/microphone") => match host.microphone.receive(body){Ok(value)=>(200,value),Err(error)=>(400,json!({"error":error}))},
         ("POST", "/api/remote/mvsep/config") => {
             let token = body["token"].as_str().unwrap_or_default().to_string();
             if token.trim().is_empty() { return (400,json!({"error":"Cole sua chave MVSEP antes de enviar."})); }
@@ -208,7 +211,9 @@ pub fn mobile_tv_host_api(app: AppHandle, path: String, method: String, body: Op
     let host = guard.as_mut().ok_or("Abra Conectar com o celular para ativar o controle da TV.")?;
     match (method.as_str(),path.as_str()) {
         ("GET","/api/remote/host-info") => Ok(info(host)),
-        ("POST","/api/remote/rotate") => { host.token = new_token(); host.commands.clear(); host.requests.clear(); Ok(info(host)) },
+        ("POST","/api/remote/rotate") => { host.token = new_token(); host.commands.clear(); host.requests.clear();let _=host.microphone.configure(json!({"session":null})); Ok(info(host)) },
+        ("POST","/api/remote/microphone/session") => host.microphone.configure(body.unwrap_or(json!({}))),
+        ("GET","/api/remote/microphone/frames") => Ok(host.microphone.drain()),
         ("POST","/api/remote/state") => { host.state = body.unwrap_or(json!({})); host.state["hostType"] = json!("tv"); Ok(json!({"ok":true})) },
         ("GET","/api/remote/commands") => Ok(json!({"commands":std::mem::take(&mut host.commands)})),
         ("GET","/api/remote/requests") => Ok(json!(host.requests)),

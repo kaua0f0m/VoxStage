@@ -16,6 +16,10 @@ mvsep-*-jobs.json
 __pycache__/
 *.py[cod]
 *.log
+.build-sequence.lock
+BUILD-SEQUENCE.json.tmp
+build-info.json.tmp
+build-info.js.tmp
 .env
 .env.*
 *.jks

@@ -2,8 +2,33 @@
 setlocal
 title VoxStage Nativo
 
-if exist "%~dp0releases\V1.0\VoxStage-Windows-x64\VoxStage.exe" (
-  start "" "%~dp0releases\V1.0\VoxStage-Windows-x64\VoxStage.exe"
+if exist "%~dp0releases\V1.1.0\VoxStage-Windows-x64\VoxStage.exe" (
+  start "" /d "%~dp0releases\V1.1.0\VoxStage-Windows-x64" "%~dp0releases\V1.1.0\VoxStage-Windows-x64\VoxStage.exe"
+  exit /b 0
+)
+
+if exist "%~dp0releases\V1.1.0-rc.3\VoxStage-Windows-x64\VoxStage.exe" (
+  start "" /d "%~dp0releases\V1.1.0-rc.3\VoxStage-Windows-x64" "%~dp0releases\V1.1.0-rc.3\VoxStage-Windows-x64\VoxStage.exe"
+  exit /b 0
+)
+
+if exist "%~dp0releases\V1.1.0-rc.2\VoxStage-Windows-x64\VoxStage.exe" (
+  start "" /d "%~dp0releases\V1.1.0-rc.2\VoxStage-Windows-x64" "%~dp0releases\V1.1.0-rc.2\VoxStage-Windows-x64\VoxStage.exe"
+  exit /b 0
+)
+
+if exist "%~dp0releases\V1.1.0-rc.1\VoxStage-Windows-x64\VoxStage.exe" (
+  start "" /d "%~dp0releases\V1.1.0-rc.1\VoxStage-Windows-x64" "%~dp0releases\V1.1.0-rc.1\VoxStage-Windows-x64\VoxStage.exe"
+  exit /b 0
+)
+
+if exist "%~dp0releases\V1.1.0-test.1\VoxStage-Windows-x64\VoxStage.exe" (
+  start "" /d "%~dp0releases\V1.1.0-test.1\VoxStage-Windows-x64" "%~dp0releases\V1.1.0-test.1\VoxStage-Windows-x64\VoxStage.exe"
+  exit /b 0
+)
+
+if exist "%~dp0releases\V1.0.2\VoxStage-Windows-x64\VoxStage.exe" (
+  start "" /d "%~dp0releases\V1.0.2\VoxStage-Windows-x64" "%~dp0releases\V1.0.2\VoxStage-Windows-x64\VoxStage.exe"
   exit /b 0
 )
 

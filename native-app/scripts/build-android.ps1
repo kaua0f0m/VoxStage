@@ -2,7 +2,9 @@ param(
     [ValidateSet('aarch64', 'armv7', 'i686', 'x86_64')]
     [string]$Target = 'aarch64',
     [switch]$Release,
-    [switch]$StandaloneDebug
+    [switch]$StandaloneDebug,
+    [switch]$ReleaseCandidate,
+    [switch]$ReuseBuildInfo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,6 +31,19 @@ $configFlag = if ($StandaloneDebug) {
     if ($Release) { throw '-StandaloneDebug só pode ser usado com o build debug.' }
     @('--config', (Join-Path $tauriRoot 'tauri.android.standalone-debug.conf.json'))
 } else { @() }
+if ($ReleaseCandidate) {
+    $env:VOXSTAGE_BUILD_VERSION = '1.1.0'
+    $configFlag += @('--config', (Join-Path $tauriRoot 'tauri.rc.conf.json'))
+}
+if ($ReuseBuildInfo) {
+    # Package another platform with the already assigned release identity.
+    $releaseVersion = if ($env:VOXSTAGE_BUILD_VERSION) { $env:VOXSTAGE_BUILD_VERSION } else {
+        (Get-Content (Join-Path $nativeRoot '..\package.json') -Raw | ConvertFrom-Json).version
+    }
+    & node (Join-Path $PSScriptRoot 'build-info.mjs') $releaseVersion '--reuse'
+    if ($LASTEXITCODE -ne 0) { throw 'Existing build metadata is invalid.' }
+    $configFlag += @('--config', (Join-Path $tauriRoot 'tauri.reuse-build.conf.json'))
+}
 $apkDir = Join-Path $androidRoot "app\build\outputs\apk\$($targetDetails.Gradle.ToLowerInvariant())\$($profile.ToLowerInvariant())"
 
 function Get-BuiltApk {

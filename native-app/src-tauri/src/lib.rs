@@ -18,6 +18,10 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 mod tv_host;
 use tv_host::mobile_tv_host_api;
+mod phone_microphone;
+
+#[tauri::command]
+fn is_debug_build() -> bool { cfg!(debug_assertions) }
 
 #[cfg(all(not(mobile), not(debug_assertions)))]
 use std::{
@@ -441,7 +445,8 @@ async fn mobile_mvsep_models() -> Result<Value, String> {
 
 fn mvsep_role(label: &str) -> &'static str {
     let normalized = label.to_lowercase().chars().filter(|c| c.is_ascii_alphabetic()).collect::<String>();
-    if normalized.contains("vocalsfull") || normalized.contains("instrumentalonly") || normalized.contains("instrumonly") { "ignore" }
+    if normalized.contains("vocalsfull") { "ignore" }
+    else if normalized.contains("instrumentalonly") || normalized.contains("instrumonly") { "inst" }
     else if normalized.contains("vocalsback") || normalized.contains("backing") || (normalized.contains("back") && !normalized.contains("instrum")) { "back" }
     else if normalized.contains("vocalslead") || normalized.contains("lead") || (normalized.contains("vocal") && !normalized.contains("instrum")) { "lead" }
     else if normalized == "instrumental" || normalized == "instrum" || normalized == "music" || normalized == "other" { "inst" }
@@ -457,13 +462,19 @@ fn mvsep_entries(files: &Value) -> Vec<(String, String, String)> {
     } else {
         files.as_array().into_iter().flatten().map(|value| (String::new(), value.clone())).collect()
     };
-    entries.into_iter().filter_map(|(fallback, entry)| {
+    let mut outputs: Vec<(String, String, String)> = entries.into_iter().filter_map(|(fallback, entry)| {
         let label = ["name", "stem", "type", "title", "filename", "label"].iter().find_map(|key| entry.get(key).and_then(Value::as_str)).unwrap_or(&fallback).to_string();
         let url = ["url", "link", "download_url", "file_url", "filelink", "download"].iter().find_map(|key| entry.get(key).and_then(Value::as_str).filter(|url| url.starts_with("https://")))?;
         let parsed = reqwest::Url::parse(url).ok()?;
         if !parsed.host_str().is_some_and(|host| host == "mvsep.com" || host.ends_with(".mvsep.com")) { return None; }
         Some((label.clone(), url.to_string(), mvsep_role(&label).to_string()))
-    }).collect()
+    }).collect();
+    if outputs.iter().any(|(label, _, role)| role == "inst" && label.to_ascii_lowercase().contains("only")) {
+        for (label, _, role) in &mut outputs {
+            if role == "inst" && !label.to_ascii_lowercase().contains("only") { *role = "ignore".to_string(); }
+        }
+    }
+    outputs
 }
 
 #[tauri::command]
@@ -902,6 +913,15 @@ async fn mobile_remote_state(base_url: String, token: String) -> Result<Value, S
 }
 
 #[tauri::command]
+async fn mobile_remote_microphone(base_url:String, token:String, body:Option<Value>)->Result<Value,String> {
+    let base=pc_library_url(&base_url)?;let token=checked_remote_token(&token)?;
+    if body.as_ref().is_some_and(|body|body.to_string().len()>4096){return Err("Pacote de microfone muito grande.".into());}
+    static CLIENT:OnceLock<reqwest::Client>=OnceLock::new();
+    let client=if let Some(client)=CLIENT.get(){client.clone()}else{let client=pc_remote_client()?;let _=CLIENT.set(client.clone());client};
+    send_pc_remote_json(&client,&base,token,"/api/remote/microphone",body).await
+}
+
+#[tauri::command]
 async fn mobile_remote_send_mvsep_key(app: AppHandle, base_url: String, token: String, api_key: Option<String>) -> Result<Value, String> {
     let base = pc_library_url(&base_url)?;
     let remote_token = checked_remote_token(&token)?;
@@ -1196,6 +1216,7 @@ fn start_packaged_backend(app: &tauri::App) -> Result<Child, Box<dyn std::error:
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default().invoke_handler(tauri::generate_handler![
+        is_debug_build,
         mobile_get_music_dir,
         mobile_get_library,
         mobile_save_song,
@@ -1206,6 +1227,7 @@ pub fn run() {
         mobile_send_pc_song,
         mobile_pc_transfer_status,
         mobile_remote_state,
+        mobile_remote_microphone,
         mobile_remote_send_mvsep_key,
         mobile_remote_control,
         mobile_remote_request,

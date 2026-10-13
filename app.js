@@ -63,6 +63,11 @@ let playbackFrame = 0;
 let playbackWatchdog = 0;
 let playbackUiUpdatedAt = 0;
 let stemGains = {};
+let playbackSpeed = 1;
+let playbackSemitones = 0;
+let tempoWorkletPromise = null;
+let tempoWorkletReady = false;
+let playbackTransformSequence = 0;
 let waveformPeaks = null;
 let waveformResizeObserver = null;
 let interfaceLanguage = 'pt-BR';
@@ -680,6 +685,7 @@ let mvsepConfigured = false;
 let youtubeSearchResults = [];
 let youtubeProcessing = false;
 let youtubeSearchSequence = 0;
+const youtubeMetadataCache = new Map();
 function mvsepKeyLocationText(saved = true) {
   const english = interfaceLanguage === 'en-US';
   if (!saved) return english ? 'No key configured.' : 'Nenhuma chave configurada.';
@@ -731,6 +737,7 @@ function renderMvsepTransfers(job){
   const stages={preparing:'Preparando áudio', 'downloading-source':'Baixando áudio do YouTube',sending:'Enviando à MVSep',waiting:'Na fila da MVSep',processing:'Processando na MVSep',distributing:'Separando a faixa',merging:'Unindo os stems',receiving:'Recebendo stems',reconnecting:'Reconectando ao MVSEP',done:'Arquivos recebidos',error:'Falha na separação'};
   $('mvsepQueueStage').textContent=stages[job.stage]||job.message||'MVSep';
   $('mvsepQueuePercent').textContent=job.indeterminate?'':`${Math.max(0,Math.min(100,Number(job.progress)||0))}%`;
+  if ($('attachMvsepFiles')) $('attachMvsepFiles').hidden = job.stage !== 'done' || !(job.files || []).some(file => file.name);
   const formatSize=bytes=>bytes>=1048576?`${(bytes/1048576).toFixed(1)} MB`:`${Math.round(bytes/1024)} KB`;
   $('mvsepFileTransfers').innerHTML=(job.files||[]).map(file=>{
     const received=Number(file.received)||0,total=Number(file.total)||0;
@@ -745,6 +752,7 @@ async function searchYoutube(){
   const includeYoutube=$('includeNormalYoutube').checked;$('youtubeSearch').disabled=true;$('youtubeResults').replaceChildren();$('youtubeProgress').hidden=true;$('youtubeStatus').textContent=interfaceLanguage==='en-US'?(includeYoutube?'Searching YouTube Music and YouTube…':'Searching YouTube Music…'):(includeYoutube?'Buscando no YouTube Music e no YouTube…':'Buscando opções no YouTube Music…');
   try{
     const result=await api('/api/youtube/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,includeYoutube})});
+    if(sequence!==youtubeSearchSequence)return;
     youtubeSearchResults=result.results||[];
     $('youtubeResults').replaceChildren();
     if(!youtubeSearchResults.length){$('youtubeStatus').textContent='Não encontrei vídeos para essa busca.';return;}
@@ -752,6 +760,7 @@ async function searchYoutube(){
       ? mobileNative ? `${youtubeSearchResults.length} option(s). Choose one to download its audio to the device.` : `${youtubeSearchResults.length} option(s)${includeYoutube?' from YouTube Music and YouTube':' prioritizing YouTube Music tracks'}. Choose one to start the MVSep upload.`
       : mobileNative ? `${youtubeSearchResults.length} opção(ões). Escolha uma para baixar o áudio no aparelho.` : `${youtubeSearchResults.length} opção(ões)${includeYoutube?' do YouTube Music e do YouTube':' priorizando faixas do YouTube Music'}. Escolher inicia o envio para a MVSep.`;
     youtubeSearchResults.forEach((item,index)=>{
+      item.metadataState = item.artist && item.album ? 'loaded' : 'pending';
       const button=document.createElement('button');button.type='button';button.className='youtube-result';
       const thumbnail=document.createElement('img');thumbnail.className='youtube-result-thumb';thumbnail.alt='';thumbnail.loading='lazy';thumbnail.src=item.thumbnail||item.thumbnailFallback||'';
       thumbnail.onerror=()=>{if(item.thumbnailFallback&&thumbnail.src!==item.thumbnailFallback){thumbnail.src=item.thumbnailFallback;return;}thumbnail.hidden=true;};
@@ -765,23 +774,29 @@ async function searchYoutube(){
   }catch(error){showYoutubeError(error)}finally{$('youtubeSearch').disabled=false;}
 }
 function renderYoutubeMetadata(item){
-  const artist=item.artist||'Artista não identificado';
-  const album=[item.album||'Álbum não informado',item.duration?`${Math.floor(item.duration/60)} min`:null,item.releaseYear||null,item.source||null].filter(Boolean).join(' · ');
+  const loading=item.metadataState==='pending';
+  const failed=item.metadataState==='error';
+  const artist=item.artist||(loading?'Buscando artista…':failed?'Não foi possível consultar o artista':'Artista não informado pelo YouTube');
+  const album=[item.album||(loading?'Buscando álbum…':failed?'Não foi possível consultar o álbum':'Álbum não informado pelo YouTube'),item.duration?`${Math.floor(item.duration/60)} min`:null,item.releaseYear||null,item.source||null].filter(Boolean).join(' · ');
   if(item.artistLabel?.isConnected){item.artistLabel.textContent=artist;item.artistLabel.title=artist;}
   if(item.albumLabel?.isConnected){item.albumLabel.textContent=album;item.albumLabel.title=album;}
+  if(failed){if(item.artistLabel)item.artistLabel.title=item.metadataError||artist;if(item.albumLabel)item.albumLabel.title=item.metadataError||album;}
 }
 async function enrichYoutubeMetadata(items,sequence){
-  let cursor=0;
-  const workers=Array.from({length:Math.min(2,items.length)},async()=>{
+  let cursor=0,blockedError='';
+  const workers=Array.from({length:Math.min(1,items.length)},async()=>{
     while(cursor<items.length){
+      if(sequence!==youtubeSearchSequence)return;
       const item=items[cursor++];
       if(item.artist&&item.album)continue;
+      if(blockedError){item.metadataState='error';item.metadataError=blockedError;renderYoutubeMetadata(item);continue;}
       try{
         const details=await ensureYoutubeMetadata(item);
         if(sequence!==youtubeSearchSequence)return;
         renderYoutubeMetadata(item);
       }catch(error){
         if(sequence!==youtubeSearchSequence)return;
+        if(/bloqueou temporariamente|limitou as solicitações|not a bot|too many requests|429/i.test(error.message||''))blockedError=error.message;
         renderYoutubeMetadata(item);
       }
     }
@@ -790,17 +805,49 @@ async function enrichYoutubeMetadata(items,sequence){
 }
 function ensureYoutubeMetadata(item){
   if(item.artist&&item.album)return Promise.resolve(item);
+  const cached=youtubeMetadataCache.get(item.url);
+  if(cached&&Date.now()-cached.time<3600000){Object.assign(item,cached.details);item.metadataState='loaded';renderYoutubeMetadata(item);return Promise.resolve(item);}
+  item.metadataState='pending';renderYoutubeMetadata(item);
   if(!item.metadataPromise)item.metadataPromise=api('/api/youtube/metadata',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:item.url,title:item.title})})
-    .then(details=>{item.title=details.title||item.title;item.artist=details.artist||item.artist;item.album=details.album||item.album;item.albumArtist=details.albumArtist||'';item.duration=details.duration||item.duration;item.releaseYear=details.releaseYear||'';renderYoutubeMetadata(item);return item;})
-    .catch(error=>{renderYoutubeMetadata(item);throw error;});
+    .then(details=>{item.title=details.title||item.title;item.artist=details.artist||item.artist;item.album=details.album||item.album;item.albumArtist=details.albumArtist||'';item.duration=details.duration||item.duration;item.releaseYear=details.releaseYear||'';item.metadataState='loaded';item.metadataError='';
+      youtubeMetadataCache.set(item.url,{time:Date.now(),details:Object.fromEntries(['title','artist','album','albumArtist','duration','releaseYear'].map(key=>[key,item[key]]))});
+      if(youtubeMetadataCache.size>256)youtubeMetadataCache.delete(youtubeMetadataCache.keys().next().value);
+      renderYoutubeMetadata(item);return item;})
+    .catch(error=>{item.metadataPromise=null;item.metadataState='error';item.metadataError=error.message;renderYoutubeMetadata(item);throw error;});
   return item.metadataPromise;
+}
+function prefillYoutubeDraft(item, draftId) {
+  const query = $('youtubeQuery').value.trim();
+  updateUploadDraft(draftId, draft => {
+    if (!draft.title.trim()) draft.title = item.title || (!/^https?:\/\//i.test(query) ? query : '');
+    if (!draft.artist.trim()) draft.artist = item.artist || '';
+  });
+}
+function attachReceivedMvsepFiles(job, draftId, replaceOriginal = false) {
+  const files = (job?.files || []).filter(file => typeof file.name === 'string' && file.name);
+  if (!files.length) throw new Error('Nenhum arquivo recebido está disponível para acoplar.');
+  if (!uploadDrafts.has(draftId)) throw new Error('O rascunho deste envio foi descartado.');
+  updateUploadDraft(draftId, draft => {
+    if (replaceOriginal) draft.files = draft.files.filter(file => !['source', 'inst', 'lead', 'back'].includes(file.role));
+    if (!draft.title.trim()) draft.title = job.title || '';
+    if (!draft.artist.trim()) draft.artist = job.artist || '';
+    const existing = new Set(draft.files.map(file => file.name || file.file?.name));
+    for (const output of files) if (!existing.has(output.name)) {
+      draft.files.push({name: output.name, role: output.role || 'ignore', label: output.label});
+      existing.add(output.name);
+    }
+  });
+  persistUploadDrafts();
 }
 let uploadActivityJob = null;
 try { uploadActivityJob = JSON.parse(localStorage.getItem('voxstage-upload-activity') || 'null'); } catch {}
 const uploadActivityButton = document.createElement('button'); uploadActivityButton.type='button'; uploadActivityButton.className='btn secondary upload-activity-button'; uploadActivityButton.hidden=true;
 const uploadActivityDialog = document.createElement('div'); uploadActivityDialog.className='upload-activity-dialog'; uploadActivityDialog.hidden=true;
 uploadActivityDialog.innerHTML='<section role="dialog" aria-modal="true" aria-labelledby="uploadActivityTitle"><header><h2 id="uploadActivityTitle">Envios em progresso</h2><button type="button" class="lyrics-close" aria-label="Fechar">×</button></header><strong class="upload-activity-name"></strong><progress max="100" value="0"></progress><p aria-live="polite"></p><footer><button type="button" class="btn secondary upload-activity-close">Fechar</button><button type="button" class="btn upload-activity-return">Voltar ao envio</button></footer></section>';
+uploadActivityDialog.querySelector('footer').insertAdjacentHTML('beforeend', '<button type="button" class="btn upload-activity-attach" hidden>Acoplar arquivos</button>');
+$('mvsepQueue').insertAdjacentHTML('beforeend', '<button type="button" class="btn secondary" id="attachMvsepFiles" hidden>Acoplar arquivos</button>');
 const uploadActivityStyle=document.createElement('style'); uploadActivityStyle.textContent='.upload-activity-button{white-space:nowrap}.upload-activity-dialog[hidden],.upload-activity-button[hidden]{display:none!important}.upload-activity-dialog{position:fixed;inset:0;z-index:22000;display:grid;place-items:center;padding:18px;background:#08090bdf;backdrop-filter:blur(10px)}.upload-activity-dialog section{box-sizing:border-box;width:min(520px,100%);padding:20px;border:1px solid #414148;border-radius:16px;background:#1b1c21}.upload-activity-dialog header,.upload-activity-dialog footer{display:flex;align-items:center;justify-content:space-between;gap:8px}.upload-activity-dialog h2{margin:0;font:700 18px Manrope}.upload-activity-name{display:block;margin-top:20px}.upload-activity-dialog progress{width:100%;height:8px;margin-top:14px;accent-color:var(--lime)}.upload-activity-dialog p{min-height:1.5em;color:#aaa;font-size:12px;line-height:1.5}.upload-activity-dialog footer{justify-content:flex-end;margin-top:16px}'; document.head.append(uploadActivityStyle);
+uploadActivityStyle.textContent += '.upload-activity-dialog footer{flex-wrap:wrap}.upload-activity-attach[hidden],#attachMvsepFiles[hidden]{display:none!important}#attachMvsepFiles{margin-top:10px}';
 document.querySelector('.mobile-library-actions,.hero-actions')?.append(uploadActivityButton); document.body.append(uploadActivityDialog);
 function updateUploadActivity(job, finished=false, error='', notify=true) {
   if (!job) return;
@@ -814,6 +861,9 @@ function updateUploadActivity(job, finished=false, error='', notify=true) {
   uploadActivityDialog.querySelector('.upload-activity-name').textContent=title;
   uploadActivityDialog.querySelector('progress').value=progress;
   uploadActivityDialog.querySelector('p').textContent=message;
+  const canAttach = uploadActivityJob.stage === 'done' && (uploadActivityJob.files || []).some(file => file.name);
+  uploadActivityDialog.querySelector('.upload-activity-attach').hidden = !canAttach;
+  $('attachMvsepFiles').hidden = !canAttach;
   try { if (notify && mobileNative) window.VoxStageMedia?.updateJobNotification(title,message,finished); } catch {}
 }
 if(uploadActivityJob) updateUploadActivity(uploadActivityJob,uploadActivityJob.finished,uploadActivityJob.error,false);
@@ -822,14 +872,30 @@ uploadActivityButton.onclick=()=>{uploadActivityDialog.hidden=false;};
 uploadActivityDialog.querySelectorAll('.lyrics-close,.upload-activity-close').forEach(button=>button.onclick=closeUploadActivity);
 uploadActivityDialog.onclick=event=>{if(event.target===uploadActivityDialog)closeUploadActivity();};
 uploadActivityDialog.querySelector('.upload-activity-return').onclick=()=>{activateUploadDraft(uploadActivityJob?.draftId||'new');showModal();closeUploadActivity();};
+function recoverReceivedMvsepFiles() {
+  try {
+    const draftId = uploadActivityJob?.draftId || 'new';
+    attachReceivedMvsepFiles(uploadActivityJob, draftId);
+    activateUploadDraft(draftId); showModal(); closeUploadActivity();
+    $('youtubeStatus').textContent = 'Arquivos acoplados. Confira os papéis e salve a música.';
+    toast('Arquivos acoplados ao formulário.');
+  } catch (error) {
+    uploadActivityDialog.querySelector('p').textContent = error.message;
+    $('youtubeStatus').textContent = error.message; toast(error.message);
+  }
+}
+$('attachMvsepFiles').onclick = recoverReceivedMvsepFiles;
+uploadActivityDialog.querySelector('.upload-activity-attach').onclick = recoverReceivedMvsepFiles;
 async function startYoutubeSeparation(item){
   if(youtubeProcessing)return;
   if(!mvsepConfigured){$('youtubeStatus').textContent='Configure sua chave da API MVSep em ⚙ Configurações primeiro.';return;}
   prepareReceiptSound();
   const draftId = captureUploadDraft().id;
+  prefillYoutubeDraft(item, draftId);
   youtubeProcessing=true;$('youtubeSearch').disabled=true;document.querySelectorAll('.youtube-result').forEach(button=>button.disabled=true);$('youtubeProgress').hidden=false;updateYoutubeProgress({progress:1,indeterminate:true});$('youtubeStatus').textContent='Iniciando…';
   try{
     if(!mobileNative)await ensureYoutubeMetadata(item).catch(()=>item);
+    prefillYoutubeDraft(item, draftId);
     const selectedModel=String(processingSettings.mvsepModelId||'12');
     const started=await api('/api/youtube/separations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:item.url,title:item.title||'',artist:item.artist||'',modelId:selectedModel,modelOptions:processingSettings.mvsepOptionsByModel?.[selectedModel]||{}})});
     const pending={...started,draftId,title:item.title||'',artist:item.artist||''};
@@ -854,15 +920,7 @@ async function followYoutubeSeparation(started,item){
       try{localStorage.removeItem('voxstage-active-mvsep-job');}catch{}
       throw new Error(job.message||'Não foi possível concluir a separação.');
     }
-    updateUploadDraft(started.draftId || 'new', draft => {
-      if (started.songId) draft.files = draft.files.filter(file => !['source', 'inst', 'lead', 'back'].includes(file.role));
-      if (!draft.title) draft.title=job.title||item.title||'';
-      if (!draft.artist) draft.artist=job.artist||item.artist||'';
-      const existing=new Set(draft.files.map(file=>file.name||file.file?.name));
-      for(const output of job.files||[])if(!existing.has(output.name)){
-        draft.files.push({name:output.name,role:output.role||'ignore',label:output.label}); existing.add(output.name);
-      }
-    });
+    attachReceivedMvsepFiles({...job,title:job.title||item.title,artist:job.artist||item.artist}, started.draftId || 'new', Boolean(started.songId));
     if (started.songId) {
       const library = await api('/api/library');
       const song = library.find(song => song.id === started.songId);
@@ -900,10 +958,12 @@ $('youtubeSearch').onclick=searchYoutube;$('youtubeQuery').onkeydown=event=>{if(
 async function downloadYoutubeAudio(item){
   if(youtubeProcessing)return;
   const draftId = captureUploadDraft().id;
+  prefillYoutubeDraft(item, draftId);
   youtubeProcessing=true;$('youtubeSearch').disabled=true;document.querySelectorAll('.youtube-result').forEach(button=>button.disabled=true);
   $('youtubeProgress').hidden=false;updateYoutubeProgress({progress:1,indeterminate:true});$('youtubeStatus').textContent=interfaceLanguage==='en-US'?'Downloading audio on this device…':'Baixando áudio no aparelho…';
   try{
     await ensureYoutubeMetadata(item).catch(()=>item);
+    prefillYoutubeDraft(item, draftId);
     const result=await api('/api/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:item.url})});
     updateUploadDraft(draftId, draft => {
       const hasAudio=draft.files.some(file=>['source','inst','lead','back'].includes(file.role));
@@ -1159,6 +1219,30 @@ deleteSong = async function (id) {
 async function ensureAudioEngine() {
   audioContext ||= new AudioContext({latencyHint: 'interactive'});
   if (audioContext.state !== 'running') await audioContext.resume();
+  if (playbackSpeed !== 1 || playbackSemitones !== 0) await ensureTempoEngine();
+}
+async function ensureTempoEngine() {
+  if (tempoWorkletReady) return;
+  if (!audioContext?.audioWorklet) throw new Error('Este aparelho não disponibilizou processamento de tom em tempo real.');
+  tempoWorkletPromise ||= audioContext.audioWorklet.addModule('audio/vendor/soundtouch-processor.js?v=2.1.1').then(() => { tempoWorkletReady = true; });
+  try { await tempoWorkletPromise; } catch (error) { tempoWorkletPromise = null; throw error; }
+}
+async function setPlaybackTransform(speed = playbackSpeed, semitones = playbackSemitones) {
+  const sequence = ++playbackTransformSequence;
+  const nextSpeed = Number(speed), nextPitch = Number(semitones);
+  playbackSpeed = Number.isFinite(nextSpeed) ? Math.max(.75, Math.min(1.25, nextSpeed)) : 1;
+  playbackSemitones = Number.isFinite(nextPitch) ? Math.max(-4, Math.min(4, Math.round(nextPitch))) : 0;
+  try {
+    if (playbackSpeed !== 1 || playbackSemitones !== 0) { await ensureAudioEngine(); }
+    if (sequence !== playbackTransformSequence) return;
+    if (playing && current?.buffers?.Inst) startAudioSources(playbackPosition());
+  } catch (error) {
+    if (sequence !== playbackTransformSequence) return;
+    playbackSpeed = 1; playbackSemitones = 0;
+    if (playing && current?.buffers?.Inst) startAudioSources(playbackPosition());
+    toast(error.message || 'Não consegui ativar velocidade e tom neste aparelho.');
+  }
+  updatePlaybackTransformControls();
 }
 
 // Vector controls share the same geometry in the stage and the mini player.
@@ -1205,6 +1289,7 @@ async function decodeStem(filename) {
 
 function stopActiveSources() {
   playbackToken++;
+  clearTimeout(current?.engine?.finishTimer);
   for (const source of Object.values(current?.engine?.sources || {})) {
     try { source.onended = null; source.stop(); } catch {}
     try { source.disconnect(); } catch {}
@@ -1212,13 +1297,16 @@ function stopActiveSources() {
   for (const node of Object.values(current?.engine?.gains || {})) {
     try { node.disconnect(); } catch {}
   }
+  try { current?.engine?.processor?.port.postMessage({type:'voxstage-stop'}); current?.engine?.processor?.disconnect(); current?.engine?.processor?.port.close(); } catch {}
+  try { current?.engine?.output?.disconnect(); } catch {}
   stemGains = {};
 }
 
 function playbackPosition() {
   if (!current?.buffers?.Inst) return playbackBase;
   if (!playing || !audioContext) return playbackBase;
-  return Math.min(current.buffers.Inst.duration, playbackBase + Math.max(0, audioContext.currentTime - playbackStartContextTime));
+  const engine = current.engine;
+  return Math.min(current.buffers.Inst.duration, playbackBase + Math.max(0, audioContext.currentTime - playbackStartContextTime - (engine?.latencySeconds || 0)) * (engine?.speed || 1));
 }
 
 function stopPlaybackUiLoop() {
@@ -1257,18 +1345,38 @@ function startAudioSources(offset = playbackBase) {
   const startAt = audioContext.currentTime + .08;
   playbackBase = Math.max(0, offset);
   playbackStartContextTime = startAt;
-  current.engine = {sources: {}, gains: {}};
+  const adjusted = tempoWorkletReady && (playbackSpeed !== 1 || playbackSemitones !== 0);
+  const output = audioContext.createGain();
+  output.gain.setValueAtTime(0, audioContext.currentTime);
+  output.gain.linearRampToValueAtTime(1, startAt + .025);
+  output.connect(audioContext.destination);
+  current.engine = {sources: {}, gains: {}, output, speed: adjusted ? playbackSpeed : 1, latencySeconds: adjusted ? .25 : 0};
+  let destination = output;
+  if (adjusted) {
+    const processor = new AudioWorkletNode(audioContext, 'soundtouch-processor', {numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2]});
+    processor.parameters.get('playbackRate').setValueAtTime(playbackSpeed, startAt);
+    processor.parameters.get('pitchSemitones').setValueAtTime(playbackSemitones, startAt);
+    processor.port.onmessage = event => {
+      if (token === playbackToken && event.data.type === 'metrics' && Number.isFinite(event.data.latencySeconds)) {
+        current.engine.latencySeconds = Math.max(0, event.data.latencySeconds);
+        current.engine.metrics = event.data;
+      }
+    };
+    processor.connect(output); current.engine.processor = processor; destination = processor;
+  }
   for (const [key, buffer] of Object.entries(current.buffers)) {
     if (!buffer) continue;
     const source = audioContext.createBufferSource();
     const gain = audioContext.createGain();
     source.buffer = buffer;
-    source.playbackRate.setValueAtTime(1, startAt);
+    source.playbackRate.setValueAtTime(current.engine.speed, startAt);
     gain.gain.setValueAtTime(Number($(`vol${key}`).value), startAt);
     source.connect(gain);
-    gain.connect(audioContext.destination);
+    gain.connect(destination);
     source.onended = () => {
-      if (token === playbackToken && key === 'Inst' && playing) finishPlayback();
+      if (token === playbackToken && key === 'Inst' && playing) {
+        current.engine.finishTimer = setTimeout(() => { if (token === playbackToken && playing) finishPlayback(); }, (current.engine.latencySeconds + (adjusted ? .05 : 0)) * 1000);
+      }
     };
     current.engine.sources[key] = source;
     current.engine.gains[key] = gain;
@@ -1279,6 +1387,7 @@ function startAudioSources(offset = playbackBase) {
   setPlayBusy(false);
   keepPlaybackUiAlive();
   syncUi();
+  window.dispatchEvent(new CustomEvent('voxstage-score-playback', {detail:{type:'start'}}));
   if (androidTv && !manualSyncState) window.dispatchEvent(new Event('voxstage-tv-song-started'));
 }
 
@@ -1286,6 +1395,7 @@ function pausePlayback() {
   if (!current) return;
   playbackBase = playbackPosition();
   playing = false;
+  window.dispatchEvent(new CustomEvent('voxstage-score-playback', {detail:{type:'pause'}}));
   stopPlaybackUiLoop();
   stopActiveSources();
   setPlayBusy(false);
@@ -1297,6 +1407,7 @@ function finishPlayback() {
   if (manualSyncState?.mode === 'silence' && manualSilenceStartMs !== null) void markManualSilenceToEnd();
   playbackBase = current.buffers?.Inst?.duration || 0;
   playing = false;
+  window.dispatchEvent(new CustomEvent('voxstage-score-playback', {detail:{type:'finish'}}));
   stopPlaybackUiLoop();
   stopActiveSources();
   setPlayBusy(false);
@@ -1319,6 +1430,7 @@ async function enqueueRemoteSong(songId) {
 }
 
 stopSong = function () {
+  window.dispatchEvent(new CustomEvent('voxstage-score-playback', {detail:{type:'stop'}}));
   if (typeof manualSyncState !== 'undefined' && manualSyncState) $('closeManualSync').click();
   stopPlaybackUiLoop();
   playing = false;
@@ -1398,7 +1510,7 @@ syncUi = function () {
     syncUi.mobileMediaAt = Date.now();
     try { window.VoxStageMedia?.update(current.title || '', current.artist || '', Boolean(playing), Math.round(duration * 1000), Math.round(time * 1000)); } catch {}
   }
-  if (playing && time >= duration) { finishPlayback(); return; }
+  if (playing && time >= duration && !current.engine?.finishTimer) { finishPlayback(); return; }
 };
 
 const refreshPlaybackUiOnReturn = () => {
@@ -1581,16 +1693,44 @@ function vocalSilenceEnd(lineIndex, nominalEndMs) {
   }
   return (current.vocalSilenceEnds[lineIndex] = null);
 }
+function hasLyricTrackingNear(ms) {
+  if (!current) return false;
+  const lines = current.lyricLines || [];
+  const tracks = [current.wordTimings, current.parallelWordTimings, current.backingWordTimings];
+  const margin = 350;
+  return lines.some((line, index) => {
+    if (!lyricWordEntries(line.text).length) return false;
+    const adjustment = current.lyricAdjustments?.[index] || {};
+    const offset = Number(adjustment.offsetMs) || 0;
+    const speed = Math.max(.5, Math.min(2, Number(adjustment.speed) || 1));
+    const origin = Number(line.time);
+    const cues = tracks.flatMap(track => track?.find(row => Number(row.lineIndex) === index)?.words || [])
+      .filter(cue => Number.isFinite(Number(cue.start)) && Number.isFinite(Number(cue.end)) && Number(cue.end) >= Number(cue.start));
+    if (cues.length) {
+      const start = Math.min(...cues.map(cue => origin + (Number(cue.start) * 1000 - origin) * speed + offset));
+      const end = Math.max(...cues.map(cue => origin + (Number(cue.end) * 1000 - origin) * speed + offset));
+      return ms >= start - margin && ms <= end + margin;
+    }
+    // Line-only lyrics still count as tracking even when the separator placed
+    // the singer in the instrumental. Bound estimates so a long interlude can pause.
+    const markedEnd = isBackingLyric(line.text) ? current.backingLineEnds?.[index] : current.lyricLineEnds?.[index];
+    const estimate = origin + Math.min(8000, Math.max(2200, lyricWordEntries(line.text).length * 550));
+    const next = lines.slice(index + 1).find(row => isBackingLyric(row.text) === isBackingLyric(line.text));
+    const end = Math.min(markedEnd != null && Number(markedEnd) > origin ? Number(markedEnd) : estimate, next?.time ?? Infinity);
+    return ms >= origin + offset - margin && ms <= origin + (end - origin) * speed + offset + margin;
+  });
+}
 function updateVocalPause(seconds) {
   const indicator = $('lyricPauseIndicator');
   const clock = indicator?.querySelector('.lyric-pause-clock');
   const positionMs = seconds * 1000;
+  const tracking = hasLyricTrackingNear(positionMs);
   const durationMs = current?.buffers?.Inst?.duration ? current.buffers.Inst.duration * 1000 : 0;
   const markedSilence = (current?.manualVocalSilences || []).find(mark => {
     const start = Number(mark?.startMs), end = mark?.endMs == null ? durationMs : Number(mark.endMs);
     return Number.isFinite(start) && Number.isFinite(end) && positionMs >= start && positionMs <= end;
   });
-  if (markedSilence) {
+  if (markedSilence && !tracking) {
     current.vocalSilenceState ||= {quietSince:null,lastPosition:null,silent:false};
     current.vocalSilenceState.silent = true;
     if (indicator) indicator.hidden = false;
@@ -1623,7 +1763,7 @@ function updateVocalPause(seconds) {
   if (rms <= threshold) {
     if (state.quietSince === null) state.quietSince = seconds;
     const minimumPause = Number(processingSettings.pauseThresholdSeconds) || 1.5;
-    if (seconds - state.quietSince >= minimumPause) state.silent = true;
+    state.silent = !tracking && seconds - state.quietSince >= minimumPause;
   } else {
     state.quietSince = null;
     state.silent = false;
@@ -1676,7 +1816,7 @@ function setProfanityMute(muted) {
 function updateWordMarker(ms, lineIndex = current?.lyricIndex ?? -1) {
   const marker = $('lyricWordMarker'), parallelMarker = $('lyricParallelWordMarker');
   const hideMarkers = () => { if (marker) marker.hidden = true; if (parallelMarker) parallelMarker.hidden = true; };
-  if (current?.wordByWordEnabled === false) { hideMarkers(); return; }
+  if (current?.wordByWordEnabled === false || current?.vocalSilenceState?.silent) { hideMarkers(); return; }
   const line = current?.lyricLines?.[lineIndex];
   const host = $('lyricCurrentLine');
   if (!line || !host) { hideMarkers(); return; }
@@ -1952,7 +2092,7 @@ function updateBackingLyrics(seconds = 0) {
   }
   wordSpans.forEach((word, wordIndex) => word.classList.toggle('active', wordIndex === active));
   const marker = $('lyricBackingWordMarker');
-  if (marker && wordMode && index >= 0 && active >= 0 && wordSpans[active]) {
+  if (marker && !current.vocalSilenceState?.silent && wordMode && index >= 0 && active >= 0 && wordSpans[active]) {
     const displayRect = marker.parentElement.getBoundingClientRect(), wordRect = wordSpans[active].getBoundingClientRect();
     marker.style.left = `${wordRect.left - displayRect.left + wordRect.width / 2}px`;
     marker.style.top = `${wordRect.top - displayRect.top - 3}px`;
@@ -1970,7 +2110,8 @@ function updateBackingLyrics(seconds = 0) {
 }
 function updateLyrics(seconds = 0) {
   if (!current) return;
-  setProfanityMute(!manualSyncState && activeCensorCue(seconds*1000));
+  const censorTime = seconds + (playing ? (current.engine?.latencySeconds || 0) * (current.engine?.speed || 1) : 0);
+  setProfanityMute(!manualSyncState && activeCensorCue(censorTime*1000));
   if (manualSyncState?.mode !== 'silence' && manualSyncState) { renderManualSyncStagePreview(); updateVocalPause(seconds); return; }
   if (!current.lyricLines?.length) {
     const showUnsyncedHint=Boolean(String(current.plainLyrics || '').trim()), lyricsNode=$('lyrics');
@@ -2004,12 +2145,13 @@ function updateLyrics(seconds = 0) {
     : lyricWordMarkup(line, 'lyric-word', index);
   $('lyrics').innerHTML = `<span id="lyricCurrentLine" class="lyric-current-line">${wordMarkup}</span><span class="lyric-pause" id="lyricPauseIndicator" aria-label="Pausa vocal" hidden><i></i><i></i><i></i><span class="lyric-pause-clock" hidden></span></span>${next ? `<span class="next">${lyricWordMarkup(next, 'lyric-word', nextIndex)}</span>` : ''}`;
   $('lyrics').dataset.unsyncedHint='false'; $('lyrics').dataset.lyricSongId=String(current.id);
+  updateVocalPause(seconds);
   updateBackingLyrics(seconds);
   const backingNode = $('lyricBackingLine'), nextNode = $('lyrics').querySelector('.next');
   if (backingNode && nextNode) nextNode.before(backingNode);
   $('lyrics').classList.add('lyric-slide');
   positionVocalPause(seconds, index);
-  if (index >= 0) updateWordMarker(ms, index);
+  updateWordMarker(ms, index);
   updateLyricAdjustmentLabel();
   const miniLine = $('nowLyric');
   if (miniLine) { miniLine.textContent = line; miniLine.hidden = !line; }
@@ -2021,6 +2163,8 @@ function cleanTrackQuery(song) {
 
 let lyricCandidates = [];
 let lyricsDialogContext = 'current';
+let lyricsSearchSequence = 0;
+let lyricsSearchController = null;
 function openLyricsDialog(context = 'current') {
   lyricsDialogContext = context;
   const source = context === 'draft' ? {title: $('titleInput').value, artist: $('artistInput').value} : current;
@@ -2032,8 +2176,9 @@ function openLyricsDialog(context = 'current') {
   $('lyricsResults').innerHTML = '<div class="lyrics-empty">Pesquise pelo nome da música para encontrar letras.</div>';
   lyricStatus(context === 'draft' ? 'A letra será salva junto com a música.' : current?.syncedLyrics ? `Letra salva: ${current.lyricTrack || current.title}` : 'Busque uma letra sincronizada ou cole sua própria letra.');
   $('lyricsDialog').classList.add('show');
+  if ($('lyricsQuery').value.trim()) void searchLyrics(false);
 }
-function closeLyricsDialog() { $('lyricsDialog').classList.remove('show'); }
+function closeLyricsDialog() { $('lyricsDialog').classList.remove('show'); lyricsSearchController?.abort(); }
 async function applyPastedLyrics() {
   const text = $('lyricsPasteInput').value.trim();
   if (!text) { lyricStatus('Cole sua letra antes de aplicar.'); $('lyricsPasteInput').focus(); return; }
@@ -2055,13 +2200,36 @@ async function searchLyrics(automatic = false) {
   if (!source) { lyricStatus('Toque uma música primeiro.'); return; }
   const query = automatic ? [cleanTrackQuery(source), source.artist].filter(Boolean).join(' ').trim() : $('lyricsQuery').value.trim();
   if (!query) { lyricStatus('Digite o título e, se souber, o artista.'); return; }
+  const sequence = ++lyricsSearchSequence;
+  lyricsSearchController?.abort();
+  const controller = lyricsSearchController = new AbortController();
+  const sourceId = context === 'draft' ? activeUploadDraftId : source.id;
+  const isCurrent = () => sequence === lyricsSearchSequence && !controller.signal.aborted &&
+    (context === 'draft' ? activeUploadDraftId === sourceId : current?.id === sourceId) &&
+    (automatic || lyricsDialogContext === context && $('lyricsDialog').classList.contains('show'));
   if (!automatic) $('lyricsResults').innerHTML = '<div class="lyrics-empty">Buscando no catálogo…</div>';
   lyricStatus(`Buscando “${query}”…`);
   try {
-    const response = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`, {headers: {'X-User-Agent': 'VoxStage/0.1 (local karaoke player)'}});
+    let response;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (!isCurrent()) return;
+      response = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`, {signal: controller.signal, headers: {'X-User-Agent': 'VoxStage/1.1 (local karaoke player)'}});
+      if (response.status !== 503 || attempt === 3) break;
+      if (!isCurrent()) return;
+      lyricStatus(`Serviço de letras temporariamente indisponível. Tentando novamente (${attempt + 1}/3)…`);
+      const retryAfter = Number(response.headers.get('Retry-After')) || 0;
+      const delay = Math.min(8000, Math.max(1000 * 2 ** attempt, retryAfter * 1000));
+      await new Promise((resolve, reject) => {
+        const abort = () => { clearTimeout(timer); reject(new DOMException('Busca cancelada', 'AbortError')); };
+        const timer = setTimeout(() => { controller.signal.removeEventListener('abort', abort); resolve(); }, delay);
+        controller.signal.addEventListener('abort', abort, {once: true});
+      });
+    }
+    if (!isCurrent()) return;
     if (response.status === 429) throw new Error('Limite de buscas atingido. Aguarde um pouco e tente novamente.');
     if (!response.ok) throw new Error(`Serviço de letras respondeu ${response.status}.`);
     const results = await response.json();
+    if (!isCurrent()) return;
     lyricCandidates = results.filter(result => result.syncedLyrics || result.plainLyrics);
     if (!lyricCandidates.length) {
       lyricStatus('Não encontrei letra para essa busca.');
@@ -2079,6 +2247,7 @@ async function searchLyrics(automatic = false) {
     document.querySelectorAll('[data-lyric-index]').forEach(button => button.onclick = () => useLyricCandidate(Number(button.dataset.lyricIndex), context));
     lyricStatus(`${lyricCandidates.length} resultado(s). Escolha a versão que corresponde à música.`);
   } catch (error) {
+    if (!isCurrent() || error.name === 'AbortError') return;
     console.error(error); lyricStatus(error.message || 'Não consegui acessar o serviço de letras.');
     if (!automatic) $('lyricsResults').innerHTML = '<div class="lyrics-empty">Não foi possível conectar. Confira a internet e tente novamente.</div>';
     else $('lyrics').innerHTML = '<span>Não foi possível buscar a letra</span><br><span class="next">Tente novamente pelo botão Letras</span>';
@@ -2200,11 +2369,12 @@ settingsDialog.innerHTML = `<section class="processing-card" role="dialog" aria-
 settingsDialog.querySelector('.processing-options.methods').closest('.processing-section').remove();
 const pauseSection = settingsDialog.querySelector('#silenceThreshold').closest('.processing-section');
 pauseSection.querySelector('b').textContent = 'Tempo mínimo de silêncio vocal';
-pauseSection.querySelector('p').textContent = 'Os pontos só aparecem depois que o vocal fica em silêncio por este tempo contínuo. A sensibilidade do áudio fica no perfil normal.';
+pauseSection.querySelector('p').textContent = 'Define quando uma pausa vocal oculta os marcadores de palavra.';
 const pauseThresholdSelect = pauseSection.querySelector('#silenceThreshold');
 pauseThresholdSelect.id = 'pauseThreshold';
 pauseThresholdSelect.innerHTML = `<option value="0.5">0,5 s · pausas bem curtas</option><option value="1">1 s · pausas curtas</option><option value="1.5">1,5 s · recomendado</option><option value="2">2 s · pausas longas</option><option value="3">3 s · silêncios prolongados</option>`;
 pauseSection.querySelector('#silenceThresholdValue').id = 'pauseThresholdValue';
+pauseSection.querySelector('#pauseThresholdValue').hidden = true;
 const mvsepKeySection = document.createElement('div'); mvsepKeySection.className = 'processing-section mvsep-key-section';
 mvsepKeySection.innerHTML = `<b>Chave da API MVSep</b><p>${mobileNative ? 'A chave fica no armazenamento privado deste app Android. Não cole sua chave aqui no chat.' : 'No Windows, ela é protegida para sua conta e fica neste computador. Não cole sua chave aqui no chat.'}</p><div class="mvsep-key-row"><input id="mvsepToken" type="password" autocomplete="new-password" placeholder="Cole sua chave da API"><button class="btn secondary" id="removeMvsepToken" type="button">Remover</button></div><small id="mvsepKeyStatus" class="mvsep-key-status">Verificando configuração…</small>`;
 const mvsepModelSection = document.createElement('div'); mvsepModelSection.className = 'processing-section mvsep-model-section';
@@ -2246,8 +2416,16 @@ const settingsCard = settingsDialog.querySelector('.processing-card');
 const settingsFooter = settingsCard.querySelector('footer');
 const settingsTabs = document.createElement('nav'); settingsTabs.className = 'settings-tabs'; settingsTabs.setAttribute('role', 'tablist'); settingsTabs.setAttribute('aria-label', 'Seções de configurações');
 settingsTabs.innerHTML = `<button type="button" role="tab" id="settingsTabPlayback" aria-controls="settingsPanePlayback" class="active" data-settings-tab="playback" aria-selected="true">Reprodução</button><button type="button" role="tab" id="settingsTabLocal" aria-controls="settingsPaneLocal" data-settings-tab="local" aria-selected="false">Processamento local</button><button type="button" role="tab" id="settingsTabCloud" aria-controls="settingsPaneCloud" data-settings-tab="cloud" aria-selected="false">Nuvem</button><button type="button" role="tab" id="settingsTabVisual" aria-controls="settingsPaneVisual" data-settings-tab="visual" aria-selected="false">Visual</button>`;
-const settingsPaneIds = {playback:'settingsPanePlayback',local:'settingsPaneLocal',cloud:'settingsPaneCloud',visual:'settingsPaneVisual'};
-const settingsPanes = Object.fromEntries(['playback','local','cloud','visual'].map(name => { const pane = document.createElement('div'); pane.className = 'settings-pane'; pane.id = settingsPaneIds[name]; pane.setAttribute('role', 'tabpanel'); pane.setAttribute('aria-labelledby', `settingsTab${name[0].toUpperCase()}${name.slice(1)}`); pane.dataset.settingsPane = name; return [name, pane]; }));
+settingsTabs.insertAdjacentHTML('beforeend','<button type="button" role="tab" id="settingsTabAbout" aria-controls="settingsPaneAbout" data-settings-tab="about" aria-selected="false">Sobre</button>');
+settingsTabs.insertAdjacentHTML('beforeend','<button type="button" role="tab" id="settingsTabDebug" aria-controls="settingsPaneDebug" data-settings-tab="debug" aria-selected="false">Debug</button>');
+function isDiagnosticBuild(info) {
+  return /-(?:rc|snapshot|test|debug)(?:[.-]|$)/i.test(info?.version||'') || /\b(?:RC|snapshot|debug)\b/i.test(info?.label||'');
+}
+let nativeDebugBuild=false;
+let settingsDebugEnabled=isDiagnosticBuild(window.VoxStageBuildInfo);
+settingsTabs.querySelector('[data-settings-tab="debug"]').hidden=!settingsDebugEnabled;
+const settingsPaneIds = {playback:'settingsPanePlayback',local:'settingsPaneLocal',cloud:'settingsPaneCloud',visual:'settingsPaneVisual',about:'settingsPaneAbout',debug:'settingsPaneDebug'};
+const settingsPanes = Object.fromEntries(['playback','local','cloud','visual','about','debug'].map(name => { const pane = document.createElement('div'); pane.className = 'settings-pane'; pane.id = settingsPaneIds[name]; pane.setAttribute('role', 'tabpanel'); pane.setAttribute('aria-labelledby', `settingsTab${name[0].toUpperCase()}${name.slice(1)}`); pane.dataset.settingsPane = name; return [name, pane]; }));
 if (mobileNative) {
   document.body.classList.add('mobile-mvsep-ready');
 }
@@ -2256,6 +2434,25 @@ settingsCard.insertBefore(settingsPanes.playback, settingsFooter);
 settingsCard.insertBefore(settingsPanes.local, settingsFooter);
 settingsCard.insertBefore(settingsPanes.cloud, settingsFooter);
 settingsCard.insertBefore(settingsPanes.visual, settingsFooter);
+settingsCard.insertBefore(settingsPanes.about, settingsFooter);
+settingsCard.insertBefore(settingsPanes.debug, settingsFooter);
+settingsPanes.about.innerHTML=`<section class="about-app"><img src="branding/voxstage-animated.svg" alt="Logo do VoxStage" width="112" height="112"><h3>VoxStage</h3><span id="aboutAppVersion" class="about-version" aria-label="Versão do aplicativo"></span><p>Feito por <a href="https://github.com/kaua0f0m" target="_blank" rel="noopener noreferrer">kaua0f0m</a></p><p>Inspirado no software de <a href="https://www.youtube.com/@funkyblackcat" target="_blank" rel="noopener noreferrer">FunkyBlackCat</a></p><details class="about-credits"><summary>Atribuições e licenças</summary><div><p>Tipografia: Nunito · SIL Open Font License.</p><p>Velocidade e tom: SoundTouchJS · MPL-2.0.</p><p>Downloads: yt-dlp e yt-dlp-android · licenças dos projetos originais.</p><p>Separação opcional: Audio Separator / UVR. Letras: LRCLIB. Separação na nuvem: MVSEP.</p><p>As licenças completas acompanham o pacote em THIRD_PARTY_NOTICES.md e nos arquivos de cada componente.</p></div></details></section>`;
+settingsPanes.about.querySelectorAll('a').forEach(link=>link.onclick=event=>{
+  if(mobileNative && window.VoxStageMedia?.openAuthorLink){event.preventDefault();window.VoxStageMedia.openAuthorLink(link.href);}
+  else if(window.__TAURI__?.core?.invoke && !mobileNative){
+    event.preventDefault();
+    void api('/api/about/open-link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:link.href})}).catch(error=>toast(error.message||'Não consegui abrir o navegador.'));
+  }
+});
+$('aboutAppVersion').textContent=window.VoxStageBuildInfo?.label||'Versão indisponível';
+async function refreshAboutVersion() {
+  try {
+    const response=await fetch('build-info.json',{cache:'no-store'});
+    if(!response.ok)return;
+    const info=await response.json();
+    if(typeof info.label==='string'&&info.label.length<100) { $('aboutAppVersion').textContent=info.label; updateDebugAvailability(info); }
+  } catch {} // The bundled script also identifies the build while offline.
+}
 const alignSection = settingsDialog.querySelector('input[name="execution"]').closest('.processing-section');
 alignSection.classList.add('local-lyrics-alignment-section');
 alignSection.dataset.settingsPage = 'local'; pauseSection.dataset.settingsPage = 'playback';
@@ -2264,7 +2461,7 @@ languageSection.dataset.settingsPage = 'visual'; themeSection.dataset.settingsPa
 settingsCard.querySelectorAll(':scope > .processing-section').forEach(section => settingsPanes[section.dataset.settingsPage || 'local'].append(section));
 if (mobileNative) settingsTabs.querySelector('[data-settings-tab="local"]').hidden = true;
 const wordPreviewSection = document.createElement('section'); wordPreviewSection.className = 'processing-section word-preview-section';
-wordPreviewSection.innerHTML = `<b>Prévia da próxima palavra</b><p>Mostra discretamente a palavra seguinte durante a reprodução. No sync manual, a próxima palavra continua visível.</p><label class="experimental-feature-row"><span><strong>Mostrar próxima palavra no playback</strong><small>Desativado por padrão; o sync manual sempre mostra o próximo alvo.</small></span><input type="checkbox" id="showUpcomingWordPreview" aria-label="Mostrar próxima palavra durante a reprodução"><i aria-hidden="true"><i></i></i></label>`;
+wordPreviewSection.innerHTML = `<b>Prévia da próxima palavra</b><label class="experimental-feature-row"><span><strong>Mostrar próxima palavra</strong></span><input type="checkbox" id="showUpcomingWordPreview" aria-label="Mostrar próxima palavra durante a reprodução"><i aria-hidden="true"><i></i></i></label>`;
 settingsPanes.playback.append(wordPreviewSection);
 const seekStepSection = document.createElement('section'); seekStepSection.className = 'processing-section';
 seekStepSection.dataset.settingsPage = 'playback';
@@ -2292,15 +2489,25 @@ wordPreviewToggle.onchange = () => {
 };
 let activeSettingsTab = 'playback';
 function selectSettingsTab(name) {
-  activeSettingsTab = settingsPanes[name] && !(mobileNative && name === 'local') ? name : 'playback';
+  activeSettingsTab = settingsPanes[name] && !(mobileNative && name === 'local') && !(name==='debug'&&!settingsDebugEnabled) ? name : 'playback';
   settingsTabs.querySelectorAll('[data-settings-tab]').forEach(button => {
     const active = button.dataset.settingsTab === activeSettingsTab;
     button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active));
   });
   Object.entries(settingsPanes).forEach(([key, pane]) => { pane.hidden = key !== activeSettingsTab; });
+  if(activeSettingsTab==='about')void refreshAboutVersion();
 }
 settingsTabs.querySelectorAll('[data-settings-tab]').forEach(button => button.onclick = () => selectSettingsTab(button.dataset.settingsTab));
 selectSettingsTab(activeSettingsTab);
+function updateDebugAvailability(info=window.VoxStageBuildInfo) {
+  settingsDebugEnabled=nativeDebugBuild||isDiagnosticBuild(info);
+  settingsTabs.querySelector('[data-settings-tab="debug"]').hidden=!settingsDebugEnabled;
+  if(!settingsDebugEnabled&&activeSettingsTab==='debug')selectSettingsTab('playback');
+}
+if(window.__TAURI__?.core?.invoke) {
+  const debugMode = mobileNative ? window.__TAURI__.core.invoke('is_debug_build') : api('/api/build-mode').then(result=>result.debug===true);
+  void debugMode.then(value=>{nativeDebugBuild=value===true;updateDebugAvailability();}).catch(()=>{});
+}
 async function updateLocalAudioStatus() {
   if (mobileNative) return;
   const backend = settingsDialog.querySelector('input[name="localAudioBackend"]:checked')?.value || processingSettings.localAudioBackend || 'cpu';
@@ -2315,6 +2522,7 @@ const settingsStyle = document.createElement('style');
 settingsStyle.textContent = `.processing-dialog{position:fixed;inset:0;z-index:35;display:none;place-items:center;padding:18px;background:#08090bd9;backdrop-filter:blur(12px)}.processing-dialog.show{display:grid}.processing-card{width:min(820px,100%);max-height:90vh;overflow:auto;padding:23px;border-radius:18px;background:linear-gradient(145deg,#202124,#141416);border:1px solid #414148;box-shadow:0 24px 80px #000b}.processing-card header,.processing-card footer{display:flex;align-items:center;justify-content:space-between}.processing-card h2{font:700 22px Manrope;margin:5px 0 0}.processing-kicker{font-size:9px;letter-spacing:1.8px;color:var(--lime);font-weight:700}.processing-section{margin-top:23px}.processing-section>b{font-size:13px}.processing-section p{margin:7px 0 12px;color:#9999a1;font-size:11px;line-height:1.5}.processing-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.processing-options label{display:flex;gap:8px;align-items:flex-start;min-width:0;padding:10px;background:#18181b;border:1px solid #35353b;border-radius:10px;cursor:pointer}.processing-options label:has(input:checked){border-color:#728b3a;background:#22271b}.processing-options input{accent-color:var(--lime);margin:2px 0 0}.processing-options span,.processing-options strong,.processing-options small{display:block}.processing-options strong{font-size:11px}.processing-options small{margin-top:4px;color:#95959c;font-size:9px;line-height:1.4}.processing-options .unavailable{opacity:.48;cursor:not-allowed}.silence-setting{display:flex;align-items:center;gap:14px;padding:12px;background:#18181b;border:1px solid #35353b;border-radius:10px}.silence-setting select{flex:1;min-width:0;background:#222226;color:#eee;border:1px solid #3d3d42;border-radius:8px;padding:9px;font-size:11px;outline:none}.silence-setting select:focus{border-color:var(--lime)}.silence-setting small{color:#95959c;font-size:9px;line-height:1.4}.mvsep-key-row{display:flex;gap:8px}.mvsep-key-row input{flex:1;min-width:0;background:#111113;color:#eee;border:1px solid #3d3d42;border-radius:8px;padding:9px;font-size:11px}.mvsep-key-row button{padding:8px 11px;font-size:10px}.mvsep-key-status{display:block;margin-top:8px;color:#a5c77a;font-size:10px}.processing-card footer{justify-content:flex-end;margin-top:20px}.settings-tabs{display:flex;flex-direction:column;align-items:stretch;gap:4px;width:190px;flex:0 0 190px;padding:6px;margin:18px 18px 0 0;border:0;border-radius:0;background:transparent}.settings-tabs button{padding:10px 12px;border-radius:7px;background:transparent;color:#a7a7ae;font-size:12px;font-weight:650;text-align:left}.settings-tabs button.active{background:#292e1e;color:#d6fb7a;box-shadow:inset 2px 0 #a9d654}.settings-card-body{min-width:0;flex:1}.settings-pane[hidden]{display:none!important}.settings-pane .processing-section:first-child{margin-top:4px}.processing-card>.settings-tabs~.settings-pane:not([hidden]){min-height:240px}.processing-card:has(.settings-tabs){display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto}.processing-card:has(.settings-tabs)>header{grid-column:1/-1}.processing-card:has(.settings-tabs)>.settings-tabs{grid-column:1;grid-row:2/4}.processing-card:has(.settings-tabs)>.settings-pane:not([hidden]){grid-column:2;grid-row:2}.processing-card:has(.settings-tabs)>footer{grid-column:2;grid-row:3}@media(max-width:600px){.processing-card{padding:17px}.processing-card:has(.settings-tabs){grid-template-columns:130px minmax(0,1fr)}.processing-card:has(.settings-tabs)>.settings-tabs{width:130px;flex-basis:130px;margin-right:10px}.settings-tabs button{padding:9px 7px;font-size:10px}.processing-options{grid-template-columns:1fr}.silence-setting{align-items:stretch;flex-direction:column}}`;
 settingsStyle.textContent += `.local-audio-options{grid-template-columns:repeat(2,minmax(0,1fr))}@media(max-width:550px){.local-audio-options{grid-template-columns:1fr}}.experimental-feature-list{display:grid;gap:7px}.experimental-feature-row{position:relative;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:54px;padding:9px 11px;border:1px solid #35353b;border-radius:10px;background:#18181b;cursor:pointer}.experimental-feature-row:has(input:checked){border-color:var(--theme-border,#667a35);background:var(--theme-soft,#22271b)}.experimental-feature-row>span,.experimental-feature-row strong,.experimental-feature-row small{display:block}.experimental-feature-row strong{font-size:11px}.experimental-feature-row small{margin-top:3px;color:#96969e;font-size:9px;line-height:1.4}.experimental-feature-row>input{position:absolute;right:11px;width:1px;height:1px;opacity:0}.experimental-feature-row>i{flex:0 0 36px;width:36px;height:21px;padding:3px;border-radius:20px;background:#414148;transition:background .16s}.experimental-feature-row>i>i{display:block;width:15px;height:15px;border-radius:50%;background:#c4c4c9;transition:transform .16s,background .16s}.experimental-feature-row:has(input:checked)>i{background:var(--lime)}.experimental-feature-row:has(input:checked)>i>i{transform:translateX(15px);background:#171811}.experimental-feature-row:has(input:focus-visible){outline:2px solid var(--lime);outline-offset:2px}[data-experimental-control][hidden]{display:none!important}`;
 document.head.append(settingsStyle);
+settingsStyle.textContent+='.about-app{display:grid;justify-items:center;align-content:center;gap:14px;min-height:260px;padding:26px 12px;text-align:center}.about-app img{width:112px;height:112px;max-width:100%;border-radius:22px}.about-app h3{margin:0;font-size:26px;letter-spacing:-.5px}.about-version{display:inline-block;max-width:100%;padding:7px 12px;border:1px solid var(--theme-border,#728b3a);border-radius:20px;background:var(--theme-soft,#22271b);color:var(--lime);font-size:12px;font-weight:750;overflow-wrap:anywhere}@media(max-width:600px){.about-app{padding:20px 4px;min-height:240px}.about-app img{width:88px;height:88px}.about-app h3{font-size:23px}.about-version{font-size:11px;padding:6px 9px}}';
 const mvsepModelStyle = document.createElement('style');
 mvsepModelStyle.textContent = `.mvsep-model-select,.mvsep-model-options select{width:100%;background:#18181b;color:#eee;border:1px solid #3d3d42;border-radius:9px;padding:10px;font-size:11px;outline:none}.mvsep-model-select:focus,.mvsep-model-options select:focus{border-color:var(--lime)}.mvsep-model-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.mvsep-model-options label{display:grid;gap:5px;color:#aaa;font-size:10px}.mvsep-model-options:empty{display:none}@media(max-width:550px){.mvsep-model-options{grid-template-columns:1fr}}`;
 document.head.append(mvsepModelStyle);
@@ -2406,7 +2614,7 @@ document.head.append(manualSilenceStyle);
 manualSilenceStyle.textContent += `.silence-from-start{display:flex;align-items:center;gap:7px;margin-top:5px;color:#c9d3b1;font-size:10px;cursor:pointer}.silence-from-start input{accent-color:var(--lime);margin:0;flex:none}`;
 manualSilenceStyle.textContent += `.censor-sync-section{margin:9px 0;padding:10px;border:1px solid #4b3643;border-radius:10px;background:#211920}.censor-sync-section>b{display:block;font-size:11px;color:#ffb5d0}.censor-sync-section>p{margin:4px 0 8px;color:#bbb;font-size:10px;line-height:1.45}.censor-sync-section>.btn{min-height:34px;margin-right:5px;font-size:10px}.profanity-picker-words>div{padding:7px 0;border-bottom:1px solid #ffffff13}.profanity-pick-word.selected{border-color:#ff9cbd!important;background:#5c2b44!important;color:white!important}`;
 const manualSilenceLyricsStyle = document.createElement('style');
-manualSilenceLyricsStyle.textContent = `.lyrics.manual-vocal-silence .lyric-current-line,.lyrics.manual-vocal-silence .next,.lyrics.manual-vocal-silence .lyric-backing-line,.lyrics.manual-vocal-silence .lyric-unsynced-hint{visibility:hidden}`;
+manualSilenceLyricsStyle.textContent = `.lyrics.manual-vocal-silence .lyric-current-line{opacity:.75}`;
 document.head.append(manualSilenceLyricsStyle);
 const manualSyncLayoutStyle = document.createElement('style');
 manualSyncLayoutStyle.textContent = '';
@@ -3749,6 +3957,7 @@ updateSyncEngineUi();
 ['Inst', 'Lead', 'Back'].forEach(key => $(`vol${key}`).oninput = event => updateVolume(key, event.target.value));
 
 let mobileStageArtwork = null;
+let stagePerformanceTools = null;
 function setMobileStageArtwork(song) {
   if (!mobileNative || !mobileStageArtwork) return;
   const cover = song?.cover || '';
@@ -3784,6 +3993,8 @@ if (mobileNative) {
   startTools.append(lyricsButton, displaySyncButton); endTools.append(mixButton, displayExit);
   actionGroup.append(startTools, endTools);
   transportRow.className = 'stage-controls'; transportRow.replaceChildren(playbackGroup, actionGroup);
+  stagePerformanceTools = document.createElement('div'); stagePerformanceTools.className = 'stage-performance-tools';
+  transportRow.append(stagePerformanceTools);
   displayBottom.replaceChildren(progressGroup, transportRow, settingsRow);
   const stageHud = document.querySelector('.display-hud');
   stageHud.classList.add('stage-hud'); stageHud.prepend(mobileControlsToggle, quickExitButton);
@@ -3942,6 +4153,7 @@ const englishUiCopy = {
   'Separar com MVSEP':'Separate with MVSEP','Volume':'Volume','Como obter uma chave MVSEP':'How to get an MVSEP key','Nome completo do arquivo':'Full file name','Faixa completa · pronta para tocar ou separar.':'Full track · ready to play or separate.','Recentes':'Recent','Favoritas':'Favorites','Configurações':'Settings','Seu espaço':'Your space','Biblioteca':'Library','Seu palco começa aqui':'Your stage starts here','Biblioteca musical':'Music library','Suas músicas, seus stems, sua apresentação.':'Your songs, your stems, your show.','＋ Adicionar música':'＋ Add music','Pronto para cantar?':'Ready to sing?','Transforme qualquer música no seu palco.':'Turn any song into your stage.','Importe suas faixas, ajuste cada voz e cante no seu ritmo — tudo salvo no seu dispositivo.':'Import your tracks, adjust each stem, and sing at your own pace — everything stays on your device.','＋ Importar música':'＋ Import music','músicas':'songs','Áudio local':'Local audio','Privado':'Private','Suas músicas':'Your songs','⌕  Buscar música...':'⌕  Search songs...','Mais recentes⌄':'Newest⌄','Mais antigas⌄':'Oldest⌄','Escolha uma música':'Choose a song','Seu palco está esperando':'Your stage is waiting','Anterior':'Previous','Próxima':'Next','Velocidade':'Speed','Transpor':'Transpose','Tela de exibição':'Stage view','Inst.':'Inst.','Lead':'Lead','Back':'Back','Adicionar música':'Add music','Os arquivos são guardados neste computador. Para começar, envie o instrumental e os vocais principais. Backing vocals são opcionais.':'Files are stored on this computer. To get started, upload the instrumental and lead vocals. Backing vocals are optional.','Os arquivos são guardados neste navegador. Para começar, envie o instrumental e os vocais principais. Backing vocals são opcionais.':'Files are stored in this browser. To get started, upload the instrumental and lead vocals. Backing vocals are optional.','Arquivos de áudio':'Audio files','Instrumental *':'Instrumental *','Vocais principais *':'Lead vocals *','Backing vocals':'Backing vocals','Imagem de capa':'Cover image','Nome da música':'Song title','Artista':'Artist','Cancelar':'Cancel','Salvar música':'Save song','Ajustes de exibição':'Display settings','Desfoque do fundo':'Background blur','Brilho do texto':'Text glow','Sair da exibição':'Exit stage view','e comece seu show':'and start your show','Sync':'Sync','Não separada':'Not separated','3 stems':'3 stems','2 stems':'2 stems','Artista desconhecido':'Unknown artist','Adicionar aos favoritos':'Add to favorites','Remover dos favoritos':'Remove from favorites','Mais opções':'More options','Editar música':'Edit song','Apagar música':'Delete song','Separar no computador':'Separate on this computer','Separando…':'Separating…','Faixa completa · pronta para tocar ou separar.':'Full track · waiting for local separation.','Nenhuma música encontrada.':'No songs found.','Sua biblioteca está vazia. Adicione uma música para começar.':'Your library is empty. Add a song to get started.','Você ainda não favoritou músicas.':'You have no favorite songs yet.','＋ Escolher arquivos de áudio, imagem e vídeo':'＋ Choose audio, image, and video files','Selecione vários arquivos de uma vez':'Select multiple files at once','Depois da seleção, marque o papel de cada arquivo.':'After selecting files, assign a role to each one.','Música completa · não separada':'Full song · not separated','Capa':'Cover','Imagem de fundo':'Background image','Vídeo de fundo':'Background video','Não usar':'Do not use','Selecionado':'Selected','Arquivo inválido':'Invalid file','Buscar ou colar do YouTube':'Search or paste from YouTube','YouTube Music primeiro':'YouTube Music first','Pesquisar no catálogo do YouTube Music…':'Search YouTube Music…','Link do YouTube ou nome da música':'YouTube link or song title','Buscar':'Search','Cole o link do vídeo do YouTube':'Paste the YouTube video link','Capa do álbum':'Album cover','Buscar capa da música':'Search for album art','CAPAS EM ALTA RESOLUÇÃO':'HIGH-RESOLUTION ARTWORK','Usar como capa':'Use as cover','Usar como fundo':'Use as background','Usar como ambos':'Use for both','Fechar':'Close','Nome da música e artista':'Song title and artist','Sincronizar letras':'Sync lyrics','Buscar letras':'Search lyrics','Letra sincronizada':'Synced lyrics','Sincronização de letras':'Lyrics sync','Sincronização manual':'Manual sync','Sincronizar':'Sync','Palavra por palavra':'Word by word','Não mostrar novamente':'Do not show again','Entendi':'Got it','Continuar':'Continue','Recurso beta':'Beta feature','Este recurso está em beta':'This feature is in beta','Modelo local':'Local model','Processamento local':'Local processing','Aviso sobre modelos locais':'Local model warning','Separação de música no computador':'Local song separation','O modo local gera instrumental e uma faixa vocal combinada. Backing vocals separados ainda não são gerados. Na primeira execução, o modelo será baixado para este computador.':'Local processing creates an instrumental and a combined vocal track. It does not create a separate backing vocal stem yet. The model will be downloaded to this computer the first time you run it.','CPU · recomendado':'CPU · recommended','GPU · DirectML beta':'GPU · DirectML beta','Mais compatível e sem depender da GPU; pode demorar.':'More compatible and does not rely on your GPU; it may take longer.','Experimental em AMD/Intel Windows; pode falhar ou consumir a memória de vídeo.':'Experimental on AMD/Intel Windows; it may fail or use a lot of video memory.','Tempo mínimo de silêncio vocal':'Minimum vocal silence duration','Os pontos só aparecem depois que o vocal fica em silêncio por este tempo contínuo. A sensibilidade do áudio fica no perfil normal.':'The pause indicator appears only after vocals stay silent for this long. Audio sensitivity remains at the normal setting.','Chave da API MVSep':'MVSep API key','No Windows, ela é protegida para sua conta e fica neste computador. Não cole sua chave aqui no chat.':'On Windows, this key is protected for your account and stays on this computer. Do not paste your key into this chat.','Remover':'Remove','Verificando configuração…':'Checking configuration…','Modelo de separação MVSep':'MVSep separation model','Escolha o algoritmo online para separar os vocais e o instrumental. As opções são carregadas do catálogo oficial.':'Choose the online algorithm for separating vocals and instrumentals. Options are loaded from the official catalog.','Carregando modelos…':'Loading models…','Carregando modelos disponíveis…':'Loading available models…','Idioma da interface':'Interface language','Escolha o idioma usado nos menus, mensagens e configurações do VoxStage.':'Choose the language used in VoxStage menus, messages, and settings.','Português (Brasil)':'Português (Brasil)','English':'English','Chave já salva · digite outra para substituir':'Key saved · enter another to replace it','Cole sua chave da API':'Paste your API key','Chave salva neste computador.':'Key saved on this computer.','Nenhuma chave configurada.':'No key configured.','Verificando instalação…':'Checking installation…','Verificando o mecanismo local…':'Checking local engine…','CPU pronto neste computador.':'CPU is ready on this computer.','DirectML pronto neste computador.':'DirectML is ready on this computer.','Chave removida deste computador.':'Key removed from this computer.','Nenhum modelo de vocais e instrumental foi encontrado.':'No vocal and instrumental models were found.','Não consegui reproduzir estes arquivos.':'Could not play these files.','Música salva na sua biblioteca.':'Song saved to your library.','Música apagada.':'Song deleted.','Instrumental e vocais principais são obrigatórios.':'Instrumental and lead vocals are required.','Adicione uma música primeiro.':'Add a song first.','Configurações de exibição: use o menu durante a apresentação.':'Display settings: use the menu during your performance.','Exibindo sua biblioteca recente.':'Showing your recent library.','Digite o nome da música ou artista.':'Enter a song title or artist.','Buscando capas…':'Searching for artwork…','Não encontrei capas para esta busca.':'No artwork found for this search.','Baixando imagem em qualidade alta…':'Downloading high-resolution artwork…','Imagem adicionada como capa. Salve a música para manter a alteração.':'Image added as cover. Save the song to keep this change.','Imagem adicionada como fundo. Salve a música para manter a alteração.':'Image added as background. Save the song to keep this change.','Imagem adicionada como capa e fundo. Salve a música para manter a alteração.':'Image added as cover and background. Save the song to keep this change.','Imagem de alta resolução adicionada.':'High-resolution image added.','Imagem aplicada como capa e fundo.':'Image applied as cover and background.','Não foi possível conectar. Confira a internet e tente novamente.':'Could not connect. Check your internet connection and try again.','Pesquise pelo nome da música para encontrar letras.':'Search by song title to find lyrics.','Buscando no catálogo…':'Searching the catalog…','Não foi possível conectar. Confira a internet e tente novamente.':'Could not connect. Check your internet connection and try again.','Letra ainda sem tempos':'Lyrics have no timing yet','Use Sync linhas para marcar enquanto toca':'Use line sync to mark lyrics during playback','Letra não encontrada':'Lyrics not found','Busque outra versão pelo botão Letras':'Search for another version using the Lyrics button','Letra sem sincronização':'Unsynced lyrics','Escolha uma versão sincronizada pelo botão Letras':'Choose a synced version using the Lyrics button','Sincronizada':'Synced','Sem tempos':'No timing','Usar letra →':'Use lyrics →','Adicionar letra à música':'Add lyrics to song','Letras sincronizadas':'Synced lyrics','Buscar letra':'Search lyrics','Ainda sem letra sincronizada.':'No synced lyrics yet.','Buscando a letra':'Searching for lyrics','via LRCLIB…':'via LRCLIB…','Esta música completa ainda precisa ser separada antes de tocar.':'This full track must be separated before playback.','Preparando os stems…':'Preparing stems…','Preferências salvas neste aparelho.':'Preferences saved on this computer.','Configurações':'Settings','Fechar':'Close','Salvar preferências':'Save preferences','Onde executar o alinhamento local de letras':'Where to run local lyric alignment','Vale para sincronizar palavras das letras já existentes. No modo automático, usa a GPU apenas se estiver disponível no ambiente instalado.':'This controls word alignment for existing lyrics. Automatic mode uses the GPU only if it is available in the installed environment.','Automático':'Automatic','Usar GPU compatível; senão, CPU':'Use a compatible GPU; otherwise, CPU','CPU':'CPU','Mais compatível; pode ser lento':'More compatible; may be slow','GPU':'GPU','Requer suporte do PyTorch e driver compatível':'Requires PyTorch support and a compatible driver','Quanto resíduo há no stem vocal?':'How much residue is in the vocal stem?','O VoxStage usa este perfil para decidir quando o vocal realmente parou. Se a voz estiver sendo cortada cedo, escolha um perfil mais baixo.':'VoxStage uses this profile to decide when vocals have stopped. If vocals are being cut off too early, choose a lower profile.','Pouco resíduo · preserva vocais baixos':'Low residue · preserves quiet vocals','Muito resíduo · ignora ruído mais alto':'High residue · ignores louder noise','Método para preparar os stems':'Stem preparation method','Importe stems manualmente ou baixe uma faixa do YouTube com yt-dlp e separe-a online pela MVSep.':'Upload stems manually or download a YouTube track with yt-dlp and separate it online with MVSep.','Arquivos manuais':'Manual files','Disponível agora':'Available now','Separação local':'Local separation','Em preparação':'In progress','API MVSep':'MVSep API','Busca no YouTube · separação online':'YouTube search · online separation','Tempo mínimo de silêncio vocal':'Minimum vocal silence duration','Configurações salvas.':'Settings saved.','＋ Buscar capa na internet':'＋ Search the internet for artwork','Buscar capa na internet':'Search the internet for artwork','Baixar vídeo':'Download video','Baixe um vídeo do YouTube diretamente para a pasta music, sem enviar nada à MVSep. Ele fica disponível como fundo mudo; se não houver faixa combinada no YouTube, o download salva apenas o vídeo e não precisa de FFmpeg.':'Download a YouTube video directly to the music folder without sending anything to MVSep. It can be used as a muted background; if YouTube has no combined audio track, only the video is saved and FFmpeg is not needed.','Configure uma chave MVSep em ⚙ Configurações para usar esta opção.':'Set an MVSep API key in ⚙ Settings to use this option.','MVSep · ONLINE':'MVSep · ONLINE','DOWNLOAD LOCAL · YT-DLP':'LOCAL DOWNLOAD · YT-DLP','Imagens serão salvas localmente.':'Images are saved locally.','Separe uma faixa completa':'Separate a full track','Separar música':'Separate track','Status local':'Local status','Sincronizar linhas':'Sync lines','Sync linhas':'Sync lines','Usar letra':'Use lyrics','Adicionar letra à música':'Add lyrics to song','Marcador de palavra':'Word marker','Sobreposição de precisão':'Vocal score overlay','Pontuação da apresentação':'Performance score','Vocal':'Vocal','Indisponível':'Unavailable','Abrir':'Open','Voltar':'Back','Padrão':'Default','Aplicar':'Apply','Restaurar':'Restore','1,5 s · recomendado':'1.5 s · recommended'
 };
 Object.assign(englishUiCopy, {
+  'Sobre':'About','Versão indisponível':'Version unavailable','Versão do aplicativo':'App version',
   'Incluir resultados do YouTube normal':'Include standard YouTube results',
   'Pesquise uma versão sincronizada ou cole sua própria letra. Backings podem ficar entre parênteses.':'Search for synced lyrics or paste your own. Put backing vocals in parentheses.',
   'Ou cole sua própria letra':'Or paste your own lyrics',
@@ -4286,6 +4498,7 @@ document.head.append(displayVideoStyle);
 function syncMutedVideoBackground(){
   const video=$('displayVideoBg'); if(!video)return;
   video.muted=true; video.defaultMuted=true; video.volume=0;
+  video.playbackRate = current?.engine?.speed || playbackSpeed;
   if(video.getAttribute('src') && video.classList.contains('active') && $('display').classList.contains('show')) {
     const source = video.getAttribute('src');
     video.play().catch(error => { if (error.name !== 'AbortError' && source === video.getAttribute('src') && $('display').classList.contains('show')) useAndroidVideoFallback(); });
@@ -4353,7 +4566,7 @@ if (topbarCrumb) topbarCrumb.outerHTML = '<div class="brand corner-brand"><div c
 
 // Shared modal layering and the mobile stage layout have one final stylesheet.
 const mobileRevisionStyles = document.createElement('link');
-mobileRevisionStyles.rel = 'stylesheet'; mobileRevisionStyles.href = 'mobile-stage.css?v=20261010-stage-groups-2';
+mobileRevisionStyles.rel = 'stylesheet'; mobileRevisionStyles.href = 'mobile-stage.css?v=1.1-rc-3';
 document.head.append(mobileRevisionStyles);
 const finalBrandAndScaleStyles = document.createElement('style');
 finalBrandAndScaleStyles.textContent = `.vx-brand-mark{display:grid;place-items:center;background:#17191a!important;color:#d4fb69!important;border:1px solid #d4fb6944;box-shadow:inset 0 0 0 1px #ffffff08}.vx-brand-mark>span{font:900 12px/1 Manrope,sans-serif;letter-spacing:-1.2px}.vx-brand-mark i{font-style:normal;color:#d4fb69;font-size:17px;vertical-align:-1px;margin:0 -1px}.profanity-picker-dialog{z-index:60}.lyric-backing-line{pointer-events:none}.playback-icon{display:block;width:24px;height:24px;flex:none}.player .controls button .playback-icon{width:22px;height:22px}`;
@@ -4485,3 +4698,114 @@ if (!mobileNative) {
     else scheduleStageIdle();
   }).observe(display, {attributes:true,attributeFilter:['class']});
 }
+
+function updatePlaybackTransformControls() {
+  document.querySelectorAll('.playback-transform').forEach(panel => {
+    const speed = panel.querySelector('[data-playback-speed]'); speed.value = playbackSpeed;
+    panel.querySelector('output').textContent = `${playbackSpeed.toFixed(2)}×`;
+    panel.querySelector('[data-playback-pitch]').value = playbackSemitones;
+    const speedButton = panel.querySelector('[data-speed-open]');
+    const pitchButton = panel.querySelector('[data-pitch-open]');
+    if (speedButton) speedButton.textContent = `${playbackSpeed.toFixed(2)}× · Tom ${playbackSemitones > 0 ? '+' : ''}${playbackSemitones}`;
+    if (pitchButton) pitchButton.textContent = `Tom ${playbackSemitones > 0 ? '+' : ''}${playbackSemitones}`;
+  });
+  const video = $('displayVideoBg'); if (video) video.playbackRate = current?.engine?.speed || playbackSpeed;
+}
+for (const target of [settingsRow, $('settingsPaneDebug')]) {
+  if (!target) continue;
+  const panel = document.createElement('div'); panel.className = 'playback-transform';
+  panel.innerHTML = `<label>Velocidade <output>1.00×</output><input type="range" min="0.75" max="1.25" step="0.05" value="1" data-playback-speed aria-label="Velocidade"></label><label>Tom<select data-playback-pitch aria-label="Tom em semitons">${Array.from({length:9},(_,index)=>index-4).map(value=>`<option value="${value}" ${value===0?'selected':''}>${value===0?'Original':`${value>0?'+':''}${value} semitons`}</option>`).join('')}</select></label><button type="button" class="btn secondary">Restaurar</button>`;
+  panel.querySelector('[data-playback-speed]').oninput = event => { panel.querySelector('output').textContent = `${Number(event.target.value).toFixed(2)}×`; };
+  panel.querySelector('[data-playback-speed]').onchange = event => { void setPlaybackTransform(Number(event.target.value), playbackSemitones); };
+  panel.querySelector('[data-playback-pitch]').onchange = event => { void setPlaybackTransform(playbackSpeed, Number(event.target.value)); };
+  panel.querySelector('button').onclick = () => { void setPlaybackTransform(1, 0); };
+  if (target === settingsRow) {
+    panel.classList.add('playback-transform-compact');
+    const popup = document.createElement('div'); popup.id = 'playbackTransformPopup'; popup.className = 'playback-transform-popup'; popup.setAttribute('popover', 'auto');
+    while (panel.firstChild) popup.append(panel.firstChild);
+    const speedButton = document.createElement('button'); speedButton.type = 'button'; speedButton.className = 'hud-btn'; speedButton.dataset.speedOpen = '';
+    speedButton.textContent = '1.00× · Tom 0'; speedButton.title = 'Ajustar velocidade e tom'; speedButton.setAttribute('aria-label', 'Ajustar velocidade e tom');
+    for (const button of [speedButton]) {
+      button.setAttribute('popovertarget', popup.id); button.setAttribute('popovertargetaction', 'toggle');
+      button.onclick = () => {
+      if (mobileNative && displayBottom.classList.contains('mix-open')) $('mobileMixToggle').click();
+      positionPopup();
+      if (!popup.togglePopover) popup.classList.toggle('popup-fallback-open');
+      };
+    };
+    panel.append(speedButton, popup);
+    const popupOpen = () => popup.classList.contains('popup-fallback-open') || (Boolean(popup.showPopover) && popup.matches(':popover-open'));
+    const closePopup = () => { if (popup.showPopover && popup.matches(':popover-open')) popup.hidePopover(); popup.classList.remove('popup-fallback-open'); };
+    function positionPopup() {
+      const rect = speedButton.getBoundingClientRect(), anchor = mobileNative ? displayBottom.getBoundingClientRect() : rect;
+      const width = Math.min(270, innerWidth - 16);
+      popup.style.width = `${width}px`;
+      popup.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - width - 8))}px`;
+      popup.style.bottom = `${Math.max(8, innerHeight - anchor.top + 12)}px`;
+      popup.style.maxHeight = `${Math.max(0, anchor.top - 20)}px`;
+      popup.style.overflowY = 'auto';
+    }
+    window.addEventListener('resize', () => { if (popupOpen()) positionPopup(); });
+    window.visualViewport?.addEventListener('resize', () => { if (popupOpen()) positionPopup(); });
+    new MutationObserver(() => {
+      if (!display.classList.contains('show') || display.classList.contains('mobile-controls-hidden')) closePopup();
+      else if (popupOpen()) positionPopup();
+    }).observe(display, {attributes:true,attributeFilter:['class']});
+    $('mobileMixToggle')?.addEventListener('click', closePopup);
+    document.addEventListener('click', event => { if (!popup.togglePopover && !panel.contains(event.target)) closePopup(); });
+  }
+  if (target === settingsRow) (stagePerformanceTools || transportRow).append(panel); else target.append(panel);
+}
+const playbackTransformStyle = document.createElement('style');
+playbackTransformStyle.textContent = `.playback-transform{display:grid;grid-template-columns:minmax(100px,1fr) minmax(115px,1fr) auto;gap:10px;align-items:end;width:100%;padding:10px;border:1px solid #ffffff25;border-radius:10px;background:#1118}.playback-transform label{display:grid;gap:5px;font-size:11px;color:#ddd}.playback-transform output{float:right;font-variant-numeric:tabular-nums}.playback-transform select{width:100%;min-height:34px;background:#202126;color:#eee;border:1px solid #444;border-radius:6px;padding:5px}.playback-transform button{font-size:10px;min-height:34px}.display-settings{flex-wrap:wrap!important}.display-settings .playback-transform{flex:1 0 100%;grid-column:1/-1}@media(max-width:420px){.playback-transform{grid-template-columns:1fr 1fr}.playback-transform button{grid-column:1/-1}}`;
+document.head.append(playbackTransformStyle);
+const compactPlaybackStyle = document.createElement('style');
+compactPlaybackStyle.textContent = `.display .playback-transform-compact{display:flex!important;flex:0 0 auto!important;grid-column:auto;width:auto;padding:0;border:0;background:none;gap:5px;align-items:center}.playback-transform-compact>button{min-height:28px!important;height:28px;padding:4px 9px!important;font-size:10px;white-space:nowrap}.playback-transform-popup{display:none;position:fixed;inset:auto;margin:0;width:270px;padding:12px;border:1px solid #555;border-radius:11px;background:#202126;color:#eee;box-shadow:0 10px 40px #0009;z-index:10030}.playback-transform-popup:popover-open,.playback-transform-popup.popup-fallback-open{display:grid;grid-template-columns:1fr;gap:10px}.playback-transform-popup label{display:grid;gap:5px;font-size:11px}.playback-transform-popup input{width:100%;accent-color:var(--lime)}.playback-transform-popup select{width:100%;min-height:28px;font-size:11px}.playback-transform-popup button{min-height:26px!important;padding:4px 8px!important;font-size:10px}.playback-transform-popup::backdrop{background:transparent}`;
+document.head.append(compactPlaybackStyle);
+Object.assign(englishUiCopy, {'Velocidade':'Speed','Tom':'Pitch','Original':'Original','Restaurar':'Reset'});
+
+// Playback boundary shared by local and phone microphone scoring.
+window.VoxStageScoreHost = {
+  mobile: mobileNative || /Android|iPhone|iPad/i.test(navigator.userAgent),
+  tv:androidTv, api, connectPhone:showRemotePanel,
+  state: () => ({song:current, context:audioContext, playing, position:playbackPosition(),
+    base:playbackBase, startTime:playbackStartContextTime, token:playbackToken,
+    speed:current?.engine?.speed || 1, transpose:current?.engine?.processor ? playbackSemitones : 0,
+    latency:current?.engine?.latencySeconds || 0, manualSync:Boolean(manualSyncState)}),
+  ensureAudio:ensureAudioEngine, pause:pausePlayback,
+  resume:() => { if (current?.buffers?.Inst) startAudioSources(playbackBase >= current.buffers.Inst.duration ? 0 : playbackBase); },
+  restart:() => { if (current?.buffers?.Inst) startAudioSources(0); },
+  lyricCues: (from, to) => {
+    if (!current) return [];
+    const result = [], lines = current.lyricLines || [];
+    lines.forEach((line, lineIndex) => {
+      const backing = isBackingLyric(line.text), entries = lyricWordEntries(line.text);
+      const adjustment = current.lyricAdjustments?.[lineIndex] || {};
+      const origin = Number(line.time), offset = Number(adjustment.offsetMs) || 0;
+      const speed = Math.max(.5, Math.min(2, Number(adjustment.speed) || 1));
+      const adjust = milliseconds => (origin + (milliseconds-origin)*speed + offset)/1000;
+      const words = (backing ? current.backingWordTimings : current.wordTimings)?.find(row => Number(row.lineIndex) === lineIndex)?.words || [];
+      const valid = words.filter(cue => Number.isFinite(Number(cue.start)) && Number.isFinite(Number(cue.end)) && Number(cue.end)>Number(cue.start));
+      if (valid.length) {
+        let entryCursor = 0;
+        for (const cue of valid) {
+          const wordIndex = entries.findIndex((entry,index) => index>=entryCursor && lyricTokenKey(entry.word)===lyricTokenKey(cue.word));
+          if (wordIndex>=0) entryCursor = wordIndex+1;
+          const start=adjust(Number(cue.start)*1000), end=adjust(Number(cue.end)*1000);
+          if (end<from || start>to || wordIndex<0) continue;
+          result.push({start,end,text:entries[wordIndex].word,backing,censored:processingSettings.markProfanity===true && isProfanityOccurrence(lineIndex,wordIndex,entries[wordIndex].word)});
+        }
+      } else if (entries.length && Number.isFinite(origin)) {
+        const next = lines.slice(lineIndex+1).find(row => isBackingLyric(row.text)===backing);
+        const marked = (backing ? current.backingLineEnds : current.lyricLineEnds)?.[lineIndex];
+        const endMs = Math.min(next?.time ?? Infinity, marked!=null && Number(marked)>origin ? Number(marked) : origin+Math.min(8000,Math.max(2200,entries.length*550)));
+        const start=adjust(origin), end=adjust(endMs);
+        if (end<from || start>to) return;
+        const text = entries.map((entry,index) => processingSettings.markProfanity===true && isProfanityOccurrence(lineIndex,index,entry.word) ? '•••' : entry.word).join(' ');
+        result.push({start,end,text,backing,line:true});
+      }
+    });
+    return result.sort((a,b)=>a.start-b.start).slice(0,80);
+  },
+  toast, mix:settingsRow, transport:stagePerformanceTools || transportRow
+};

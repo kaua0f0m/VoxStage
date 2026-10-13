@@ -49,6 +49,12 @@ body.mobile-native-app #display .stage-progress .waveform-canvas {
   height:22px!important; width:100%; min-width:0; grid-column:auto; grid-row:auto; order:0;
 }
 body.mobile-native-app #display .stage-controls { display:flex; flex-direction:column; gap:8px; min-width:0; }
+body.mobile-native-app #display .stage-performance-tools { display:flex; flex-direction:row; align-items:center; justify-content:center; gap:8px; min-width:0; }
+body.mobile-native-app #display .stage-performance-tools .playback-transform-compact { width:auto!important; }
+body.mobile-native-app #display .stage-performance-tools :is([data-speed-open],#scoreOpen) {
+  flex:0 0 auto!important; width:max-content!important; min-height:38px!important; height:38px!important;
+  padding:6px 10px!important; font-size:11px!important; white-space:nowrap;
+}
 body.mobile-native-app #display .stage-playback,
 body.mobile-native-app #display .stage-actions,
 body.mobile-native-app #display .stage-tools-start,
@@ -143,6 +149,7 @@ body.mobile-native-app #display.sync-editing .display-content { padding-top:calc
   body.mobile-native-app #display .stage-controls { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:10px; }
   body.mobile-native-app #display .stage-playback { grid-column:2; grid-row:1; gap:8px; }
   body.mobile-native-app #display .stage-actions { display:contents; }
+  body.mobile-native-app #display .stage-performance-tools { grid-column:1/-1; grid-row:2; }
   body.mobile-native-app #display .stage-tools-start { grid-column:1; grid-row:1; justify-content:flex-start; }
   body.mobile-native-app #display .stage-tools-end { grid-column:3; grid-row:1; justify-content:flex-end; }
   body.mobile-native-app #display .stage-playback #dispPlay { width:48px!important; min-width:48px!important; height:48px!important; }

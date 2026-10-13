@@ -6,8 +6,10 @@ The executable must already have been built with tauri.desktop-release.conf.json
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,7 +17,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+VERSION = os.environ.get("VOXSTAGE_BUILD_VERSION") or json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?', VERSION):
+    raise SystemExit('Invalid package version.')
 RELEASE = ROOT / "releases" / f"V{VERSION}"
 PACKAGE = RELEASE / "VoxStage-Windows-x64"
 APP = PACKAGE / "app"
@@ -36,22 +40,53 @@ def copy_tree(source: Path, target: Path, excluded=()) -> None:
             shutil.copy2(file, destination)
 
 
+def write_archive() -> None:
+    archive = RELEASE / f"VoxStage-{VERSION}-Windows-x64.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
+        for file in sorted(PACKAGE.rglob("*")):
+            if file.is_file() and "__pycache__" not in file.parts:
+                output.write(file, file.relative_to(RELEASE))
+    print(f"Windows portable: {archive} ({archive.stat().st_size:,} bytes)")
+
+
 def main() -> None:
     runtime_only = "--runtime-only" in sys.argv
+    refresh_only = "--refresh-only" in sys.argv
     executable = ROOT / "native-app/src-tauri/target/release/voxstage-native.exe"
     if not runtime_only and not executable.is_file():
         raise SystemExit("Build the Windows executable before packaging.")
     if sys.version_info[:2] != (3, 13):
         raise SystemExit("Use Python 3.13 to package its matching DLLs and stdlib.")
+    if not runtime_only:
+        metadata_args = [shutil.which('node') or 'node', str(ROOT / 'native-app/scripts/build-info.mjs'), VERSION]
+        if '--reuse-build-info' in sys.argv:
+            metadata_args.append('--reuse')
+        build_info = json.loads(subprocess.check_output(metadata_args, cwd=ROOT, text=True))
+        print(f"Build: {build_info['label']}", flush=True)
     APP.mkdir(parents=True, exist_ok=True)
     if not runtime_only:
-        shutil.copy2(executable, PACKAGE / "VoxStage.exe")
+        destination_executable = PACKAGE / "VoxStage.exe"
+        def executable_hash(file):
+            with file.open('rb') as source:
+                return hashlib.file_digest(source, 'sha256').digest()
+        if not destination_executable.is_file() or executable_hash(executable) != executable_hash(destination_executable):
+            shutil.copy2(executable, destination_executable)
     config = json.loads((ROOT / "native-app/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
     for source, destination in config["bundle"]["resources"].items():
         source_file = (ROOT / "native-app/src-tauri" / source).resolve()
         target_file = PACKAGE / destination
         target_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_file, target_file)
+
+    if refresh_only:
+        if not (RUNTIME / "python.exe").is_file() or not (APP / "bin/ffmpeg.exe").is_file():
+            raise SystemExit('Prepare the complete package before refreshing frontend assets.')
+        for name in ['THIRD_PARTY_NOTICES.md', 'README.md', 'CHANGELOG.md']:
+            shutil.copy2(ROOT / name, PACKAGE / name)
+        if "-" in VERSION:
+            shutil.copy2(ROOT / 'TESTE-1.1.md', PACKAGE / 'TESTE-1.1.md')
+        write_archive()
+        return
 
     python_home = Path(sys.base_prefix)
     RUNTIME.mkdir(parents=True, exist_ok=True)
@@ -107,6 +142,8 @@ def main() -> None:
     (PACKAGE / "branding").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "branding/voxstage-animated.svg", PACKAGE / "branding/voxstage-animated.svg")
     shutil.copy2(ROOT / "CHANGELOG.md", PACKAGE / "CHANGELOG.md")
+    if "-" in VERSION:
+        shutil.copy2(ROOT / "TESTE-1.1.md", PACKAGE / "TESTE-1.1.md")
     (PACKAGE / "RUNTIMES.json").write_text(json.dumps({"python":sys.version, "packages":versions}, indent=2), encoding="utf-8")
     # WScript launches the GUI executable without opening a command window.
     (PACKAGE / "Abrir VoxStage.vbs").write_text(
@@ -143,12 +180,7 @@ def main() -> None:
     if runtime_only:
         print(f"Windows runtime prepared: {RUNTIME}")
         return
-    archive = RELEASE / f"VoxStage-{VERSION}-Windows-x64.zip"
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
-        for file in sorted(PACKAGE.rglob("*")):
-            if file.is_file() and "__pycache__" not in file.parts:
-                output.write(file, file.relative_to(RELEASE))
-    print(f"Windows portable: {archive} ({archive.stat().st_size:,} bytes)")
+    write_archive()
 
 
 if __name__ == "__main__":

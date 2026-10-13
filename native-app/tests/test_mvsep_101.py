@@ -13,6 +13,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 storage = tempfile.TemporaryDirectory(prefix="voxstage-test-", dir=ROOT / 'native-app/tests')
 assert Path(storage.name).resolve().is_relative_to(ROOT / 'native-app/tests')
 tempfile.tempdir = storage.name
@@ -25,6 +26,99 @@ class Response(io.BytesIO):
     headers = {"Content-Length": "4"}
 
 class MvsepTests(unittest.TestCase):
+    def test_build_mode_uses_local_development_backend_flag(self):
+        from urllib.error import HTTPError
+        host=server.ThreadingHTTPServer(("127.0.0.1",0),server.Handler)
+        runner=threading.Thread(target=host.serve_forever,daemon=True);runner.start()
+        address=f"http://127.0.0.1:{host.server_port}/api/build-mode"
+        try:
+            for flag in ("0","1"):
+                with patch.dict(server.os.environ,{"VOXSTAGE_DEBUG_BUILD":flag}), urlopen(address) as response:
+                    self.assertEqual(json.load(response),{"debug":flag=="1"})
+            with patch.object(server.Handler,"_is_loopback",return_value=False):
+                with self.assertRaises(HTTPError) as caught:urlopen(address)
+                self.assertEqual(caught.exception.code,403)
+        finally:
+            host.shutdown();host.server_close();runner.join()
+
+    def test_about_links_dispatch_to_default_browser(self):
+        from urllib.error import HTTPError
+        host = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        runner = threading.Thread(target=host.serve_forever, daemon=True); runner.start()
+        address = f"http://127.0.0.1:{host.server_port}/api/about/open-link"
+        def request(body):
+            return urlopen(Request(address, data=json.dumps(body).encode(), headers={"Content-Type":"application/json"}))
+        try:
+            with patch.object(server.os, "startfile", create=True) as opener:
+                for link in ("https://github.com/kaua0f0m", "https://www.youtube.com/@funkyblackcat"):
+                    with request({"url":link}) as response:
+                        self.assertEqual(json.load(response), {"opened":True})
+                    opener.assert_called_with(link)
+                self.assertEqual(opener.call_count, 2)
+                for body in ({"url":"file:///C:/Windows/notepad.exe"}, {"url":"https://github.com/other"}, {}, []):
+                    with self.assertRaises(HTTPError) as caught:
+                        request(body)
+                    self.assertEqual(caught.exception.code, 400)
+                self.assertEqual(opener.call_count, 2)
+                with patch.object(server.Handler, "_is_loopback", return_value=False):
+                    with self.assertRaises(HTTPError) as caught:
+                        request({"url":"https://github.com/kaua0f0m"})
+                    self.assertEqual(caught.exception.code, 403)
+                self.assertEqual(opener.call_count, 2)
+                opener.side_effect = OSError("No browser")
+                with self.assertRaises(HTTPError) as caught:
+                    request({"url":"https://github.com/kaua0f0m"})
+                self.assertEqual(caught.exception.code, 400)
+        finally:
+            host.shutdown(); host.server_close(); runner.join()
+
+    def test_music_search_preserves_catalog_without_opening_video(self):
+        import yt_dlp
+        def run(text, page=None):
+            result = {"text": text}
+            if page:
+                result["navigationEndpoint"] = {"browseEndpoint": {"browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": page}}}}
+            return result
+        renderer = {"playlistItemData": {"videoId": "NKSqoIGYzGY"}, "flexColumns": [
+            {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [run("Machine Love")]}}},
+            {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [run("Jamie Paige", "MUSIC_PAGE_TYPE_ARTIST"), run(" · "), run("Guest", "MUSIC_PAGE_TYPE_ARTIST"), run("DAEMON/DOLL", "MUSIC_PAGE_TYPE_ALBUM"), run("3:37")]}}}
+        ]}
+        with yt_dlp.YoutubeDL({"quiet": True}) as downloader:
+            server.preserve_youtube_catalog_metadata(downloader)
+            entry = downloader.get_info_extractor("YoutubeMusicSearchURL")._music_reponsive_list_entry(renderer)
+        self.assertEqual(entry["title"], "Machine Love")
+        self.assertEqual(entry["artist"], "Jamie Paige, Guest")
+        self.assertEqual(entry["album"], "DAEMON/DOLL")
+        self.assertEqual(entry["duration"], 217)
+        self.assertEqual(server.youtube_catalog_fields({})["artist"], "")
+
+    def test_bot_block_is_not_reported_as_missing_metadata(self):
+        from yt_dlp.utils import DownloadError
+        error = DownloadError("Sign in to confirm you're not a bot")
+        self.assertIn("bloqueou temporariamente", server.youtube_error_message(error))
+        host = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        runner = threading.Thread(target=host.serve_forever, daemon=True); runner.start()
+        try:
+            with patch.object(server, "youtube_video_metadata", side_effect=error), patch.object(server.traceback, "print_exc"):
+                request = Request(f"http://127.0.0.1:{host.server_port}/api/youtube/metadata", data=json.dumps({"url":"https://music.youtube.com/watch?v=NKSqoIGYzGY"}).encode(), headers={"Content-Type":"application/json"})
+                from urllib.error import HTTPError
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(request)
+                self.assertEqual(caught.exception.code, 503)
+                self.assertIn("não é um bot", json.load(caught.exception)["error"])
+        finally:
+            host.shutdown(); host.server_close(); runner.join()
+
+    def test_karaoke_instrum_only_is_preferred_in_any_order(self):
+        files = [{"label":label,"url":f"https://mvsep.com/{index}.flac"} for index,label in enumerate([
+            "Instrumental", "Vocals Full", "Instrum only", "Vocals Lead", "Vocals Back"])]
+        for entries in (files, list(reversed(files))):
+            result = server._mvsep_file_entries(entries)
+            self.assertEqual([entry["label"] for entry in result if entry["role"] == "inst"], ["Instrum only"])
+            self.assertEqual({entry["role"] for entry in result}, {"inst", "lead", "back", "ignore"})
+        alternate = server._mvsep_file_entries({"Instrumental only":{"url":"https://mvsep.com/only.flac"}})
+        self.assertEqual(alternate[0]["role"], "inst")
+
     def setUp(self):
         self.song_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         self.source = f"{self.song_id}.wav"
