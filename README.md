@@ -168,15 +168,16 @@ VoxStage code; third-party licenses remain applicable.
 
 ## Novidades da 1.1
 
-- Pontuação de canto com notas sustentadas, microfone local, referências por ambos os vocais ou pelas três trilhas e histórico local.
+- Pontuação de canto com notas sustentadas, microfone local, referências por ambos os vocais ou pelas três trilhas, início automático da música e histórico local.
 - Pontos cumulativos: 1.000 por nota acertada, sem perder pontos. Estrelas em 9/18/27/36/45%; cinco estrelas douradas em 55%.
 - Velocidade de 0,75× a 1,25× e tom de −4 a +4 semitons em tempo real, com letras e pontuação acompanhando os ajustes.
 - Celular conectado como microfone do PC/TV, além da captura nativa no Android. Essa integração ainda precisa de avaliação em aparelhos físicos.
 - Faixa de notas adaptada ao Android vertical/horizontal e à TV, com letras opcionais e controles compactos.
-- Preenchimento automático pelo YouTube, correções de metadados do YouTube Music, busca de letras ao abrir com recuperação de falhas 503 e botão Acoplar arquivos.
-- Aba Sobre com logo, versão por deploy, autor, inspiração e atribuições; controles de diagnóstico ficam fora da versão estável.
+- Preenchimento automático pelo YouTube, correções de metadados do YouTube Music, melhor reconhecimento do instrumental no MVSEP e botão Acoplar arquivos.
+- Busca automática de letras com recuperação de falhas temporárias; pausas instrumentais preservam o texto e respeitam a sincronização dos trechos cantados.
+- Aba Sobre com logo, versão, autor, inspiração e atribuições; links abrem o navegador e as configurações ficam mais organizadas.
 
-O [changelog completo](CHANGELOG.md) descreve todas as mudanças desde a 1.0.2, as verificações realizadas e os limites atuais. A precisão da pontuação depende do mapa automático e da qualidade da separação dos vocais.
+O [changelog](CHANGELOG.md) reúne as novidades das versões públicas.
 
 ### Pacotes atuais
 

@@ -6,6 +6,8 @@ native-app/dev-data/
 native-app/test-results/
 native-app/tests/voxstage-test-*/
 releases/
+ROADMAP-1.1.md
+TESTE-1.1.md
 music/
 library.json
 mvsep-config.json
