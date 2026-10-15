@@ -127,6 +127,20 @@ async function main() {
     assert.equal(await page.locator('#volLead').isVisible(),true);
     await page.evaluate(()=>pausePlayback());
     await page.locator('#addTop').click();
+    let automaticMetadataRequests=0;
+    await page.route('**/api/youtube/metadata',route=>{automaticMetadataRequests++;return route.fulfill({json:{}});});
+    await page.route('**/api/youtube/search',route=>route.fulfill({json:{results:[
+      {url:'https://music.youtube.com/watch?v=abcdefghijk',title:'Será',artist:'Legião Urbana',album:'Legião Urbana'},
+      {url:'https://music.youtube.com/watch?v=abcdefghijL',title:'Faixa sem álbum',artist:'Artista'}
+    ]}}));
+    await page.locator('#youtubeQuery').fill('Será - Legião Urbana');
+    await page.evaluate(()=>searchYoutube());
+    assert.equal(await page.locator('.youtube-result').count(),2);
+    assert.match(await page.locator('.youtube-result').first().textContent(),/Legião Urbana/);
+    assert.equal(automaticMetadataRequests,0,'Searching must not open every video to fill missing albums');
+    assert.doesNotMatch(await page.locator('#youtubeResults').textContent(),/Buscando álbum|não encontrado/i);
+    await page.unroute('**/api/youtube/search');
+    await page.unroute('**/api/youtube/metadata');
     let metadataRequests=0;
     await page.route('**/api/youtube/metadata',route=>{
       metadataRequests++;

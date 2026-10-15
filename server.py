@@ -26,6 +26,8 @@ from urllib.parse import quote, urlencode, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 from uuid import uuid4
+from youtube_support import (youtube_access, youtube_request_options, is_youtube_block,
+                             youtube_catalog_fields, preserve_youtube_catalog_metadata)
 
 ROOT = Path(os.environ.get("VOXSTAGE_APP_ROOT") or Path(__file__).resolve().parent).expanduser().resolve()
 DATA_ROOT = Path(os.environ.get("VOXSTAGE_DATA_DIR") or ROOT).expanduser().resolve()
@@ -301,11 +303,13 @@ def valid_youtube_url(value):
 
 def youtube_js_runtime_options():
     runtimes = {runtime: {} for runtime in ("deno", "node", "bun") if shutil.which(runtime)}
-    return {"js_runtimes": runtimes} if runtimes else {}
+    return {**youtube_request_options(), **({"js_runtimes": runtimes} if runtimes else {})}
 
 
 def youtube_error_message(error):
     detail = str(error).lower()
+    if str(error).startswith('O YouTube bloqueou temporariamente'):
+        return str(error)
     if "not a bot" in detail or "confirm you're" in detail or "confirm you’re" in detail:
         return "O YouTube bloqueou temporariamente as consultas e pediu confirmação de que você não é um bot. Aguarde alguns minutos e tente novamente."
     if "429" in detail or "too many requests" in detail:
@@ -315,47 +319,6 @@ def youtube_error_message(error):
     if "video unavailable" in detail or "not available" in detail:
         return "O YouTube não disponibilizou esta faixa para importação agora. Tente novamente mais tarde ou escolha outro resultado."
     return "Não consegui consultar ou baixar esta faixa no YouTube. Confira sua conexão e tente novamente."
-
-
-def youtube_catalog_fields(renderer):
-    """Keep the metadata already present in Music search, without opening videos."""
-    artists, album, duration = [], "", None
-    for column in renderer.get("flexColumns") or []:
-        runs = column.get("musicResponsiveListItemFlexColumnRenderer", {}).get("text", {}).get("runs", [])
-        for run in runs:
-            text = (run.get("text") or "").strip()
-            browse = run.get("navigationEndpoint", {}).get("browseEndpoint", {})
-            page = browse.get("browseEndpointContextSupportedConfigs", {}).get("browseEndpointContextMusicConfig", {}).get("pageType", "")
-            if page in {"MUSIC_PAGE_TYPE_ARTIST", "MUSIC_PAGE_TYPE_USER_CHANNEL"} and text and text not in artists:
-                artists.append(text)
-            elif page == "MUSIC_PAGE_TYPE_ALBUM":
-                album = text
-            elif not browse and re.fullmatch(r"\d{1,3}:\d{2}(?::\d{2})?", text):
-                duration = 0
-                for component in text.split(":"):
-                    duration = duration * 60 + int(component)
-    images = renderer.get("thumbnail", {}).get("musicThumbnailRenderer", {}).get("thumbnail", {}).get("thumbnails", [])
-    return {"artist": ", ".join(artists), "album": album, "duration": duration, "thumbnails": images}
-
-
-def preserve_youtube_catalog_metadata(downloader):
-    # yt-dlp's Music search adapter currently retains only title/id. Override
-    # this adapter per downloader; leave video extraction and other searches alone.
-    try:
-        from yt_dlp.extractor.youtube import YoutubeMusicSearchURLIE as BaseSearch
-    except ImportError:
-        return
-    if not hasattr(BaseSearch, "_music_reponsive_list_entry"):
-        return
-
-    class YoutubeMusicSearchURLIE(BaseSearch):
-        def _music_reponsive_list_entry(self, renderer):
-            entry = super()._music_reponsive_list_entry(renderer)
-            if entry and renderer.get("playlistItemData", {}).get("videoId"):
-                entry.update({key: value for key, value in youtube_catalog_fields(renderer).items() if value})
-            return entry
-
-    downloader.add_info_extractor(YoutubeMusicSearchURLIE(downloader))
 
 
 def youtube_search(query, include_youtube=False):
@@ -379,8 +342,12 @@ def youtube_search(query, include_youtube=False):
         seen_ids = set()
         for target, source in targets:
             try:
-                result = downloader.extract_info(target, download=False)
-            except Exception:
+                result = youtube_access.run(("search", target), lambda: downloader.extract_info(target, download=False), ttl=300)
+            except Exception as error:
+                if is_youtube_block(error):
+                    if entries:
+                        break
+                    raise
                 # Preserve YouTube Music results if the optional standard
                 # YouTube search endpoint fails.
                 if source == targets[-1][1] and not entries:
@@ -424,7 +391,7 @@ def youtube_video_metadata(video_url):
         raise ValueError("O link do vídeo não é válido.")
     options = {"quiet": True, "no_warnings": True, "skip_download": True, "proxy": "", **youtube_js_runtime_options()}
     with yt_dlp.YoutubeDL(options) as downloader:
-        info = downloader.extract_info(video_url, download=False)
+        info = youtube_access.run(("metadata", video_url), lambda: downloader.extract_info(video_url, download=False), ttl=600)
     return {
         "title": info.get("track") or info.get("title") or "Faixa do YouTube",
         "artist": info.get("artist") or info.get("creator") or info.get("channel") or info.get("uploader") or "",
@@ -603,7 +570,7 @@ def youtube_mvsep_worker(job_id, video_url, model_id, model_options, source_song
 
                 options = {"format": "bestaudio[ext=m4a]/bestaudio/best", "outtmpl": str(Path(temp_dir) / "source.%(ext)s"), "noplaylist": True, "quiet": True, "no_warnings": True, "max_filesize": 512 * 1024 * 1024, "progress_hooks": [download_progress], "proxy": "", **youtube_js_runtime_options()}
                 with yt_dlp.YoutubeDL(options) as downloader:
-                    info = downloader.extract_info(video_url, download=True)
+                    info = youtube_access.run(None, lambda: downloader.extract_info(video_url, download=True))
                     audio_path = Path(downloader.prepare_filename(info))
                 if not audio_path.is_file():
                     candidates = list(Path(temp_dir).glob("source.*"))
@@ -696,7 +663,9 @@ def youtube_mvsep_worker(job_id, video_url, model_id, model_options, source_song
             raise RuntimeError("O processamento demorou demais. Confira o status da faixa no site da MVSep.")
     except Exception as error:
         detail = str(error).lower()
-        if "javascript" in detail or "deno" in detail or "ejs" in detail:
+        if is_youtube_block(error):
+            message = youtube_error_message(error)
+        elif "javascript" in detail or "deno" in detail or "ejs" in detail:
             message = "O yt-dlp precisa de um runtime JavaScript. Instale o Deno e tente novamente."
         elif "private video" in detail or "sign in" in detail or "members-only" in detail or "not a bot" in detail:
             message = youtube_error_message(error)
@@ -762,7 +731,7 @@ def youtube_video_download_worker(job_id, video_url):
             **youtube_js_runtime_options(),
         }
         with yt_dlp.YoutubeDL(options) as downloader:
-            info = downloader.extract_info(video_url, download=True)
+            info = youtube_access.run(None, lambda: downloader.extract_info(video_url, download=True))
             downloaded_path = Path(downloader.prepare_filename(info))
         if not downloaded_path.is_file():
             candidates = [path for path in MEDIA.glob(f".{file_id}.*") if path.is_file() and not path.name.endswith((".part", ".ytdl"))]
@@ -796,7 +765,9 @@ def youtube_video_download_worker(job_id, video_url):
             except OSError:
                 pass
         detail = str(error).lower()
-        if "javascript" in detail or "deno" in detail or "ejs" in detail:
+        if is_youtube_block(error):
+            message = youtube_error_message(error)
+        elif "javascript" in detail or "deno" in detail or "ejs" in detail:
             message = "O yt-dlp precisa de um runtime JavaScript. Instale o Deno e tente novamente."
         elif "private video" in detail or "sign in" in detail or "members-only" in detail:
             message = "Este vídeo exige acesso ou login no YouTube e não pode ser baixado agora."

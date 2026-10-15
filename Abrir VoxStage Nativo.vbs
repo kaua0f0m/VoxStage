@@ -3,7 +3,7 @@ Dim shell, files, folder, executable, version
 Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
 folder = files.GetParentFolderName(WScript.ScriptFullName)
-For Each version In Array("1.1.1", "1.1.0", "1.0.2")
+For Each version In Array("1.1.2", "1.1.0", "1.0.2")
   executable = files.BuildPath(folder, "releases\V" & version & "\VoxStage-Windows-x64\VoxStage.exe")
   If files.FileExists(executable) Then Exit For
 Next

@@ -119,6 +119,20 @@ class MvsepTests(unittest.TestCase):
         alternate = server._mvsep_file_entries({"Instrumental only":{"url":"https://mvsep.com/only.flac"}})
         self.assertEqual(alternate[0]["role"], "inst")
 
+    def test_youtube_cooldown_is_reported_before_mvsep_upload(self):
+        error=ValueError('O YouTube bloqueou temporariamente as consultas. Aguarde 60 segundos antes de tentar novamente; importe o áudio e use Separar com MVSEP.')
+        server.youtube_jobs['blocked']={'stage':'starting'}
+        server.video_download_jobs['blocked']={'stage':'starting'}
+        with patch.object(server,'get_mvsep_token',return_value='test-token'), patch.object(server.youtube_access,'run',side_effect=error), patch.object(server,'mvsep_multipart_upload') as upload:
+            server.youtube_mvsep_worker('blocked','https://youtu.be/abcdefghijk',12,{})
+            server.youtube_video_download_worker('blocked','https://youtu.be/abcdefghijk')
+            upload.assert_not_called()
+        for jobs in (server.youtube_jobs,server.video_download_jobs):
+            self.assertEqual(jobs['blocked']['stage'],'error')
+            self.assertIn('60 segundos',jobs['blocked']['message'])
+            self.assertNotIn('Falha na MVSep',jobs['blocked']['message'])
+        self.assertTrue((server.MEDIA/self.source).is_file())
+
     def setUp(self):
         self.song_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         self.source = f"{self.song_id}.wav"

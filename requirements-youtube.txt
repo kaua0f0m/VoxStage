@@ -1,2 +1,2 @@
 # Importar áudio de links e pesquisa do YouTube pelo importador do VoxStage.
-yt-dlp[default]
+yt-dlp[default]==2026.10.10.233141.dev0

@@ -62,7 +62,7 @@ $node = (Get-Command node.exe -ErrorAction Stop).Source
 $tauriCli = Join-Path $nativeRoot 'node_modules\@tauri-apps\cli\tauri.js'
 if ($SkipPreparation) {
     # Frontend-only rebuild after this checkout's runtime was already prepared.
-    foreach ($asset in @('app\src\main\jniLibs\arm64-v8a\libvoxstage_qjs.so','app\src\main\assets\yt-dlp-2026.08.19.zip','tauri.settings.gradle')) {
+    foreach ($asset in @('app\src\main\jniLibs\arm64-v8a\libvoxstage_qjs.so','app\src\main\assets\yt-dlp-runtime.zip','tauri.settings.gradle')) {
         if (-not (Test-Path (Join-Path $androidRoot $asset))) { throw 'Prepare the Android runtime before reusing it.' }
     }
 } else {

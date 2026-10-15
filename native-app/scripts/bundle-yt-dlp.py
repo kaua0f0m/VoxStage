@@ -10,10 +10,10 @@ from yt_dlp.version import __version__
 
 
 def main():
-    if __version__ != "2026.08.19":
-        raise SystemExit(f"Expected yt-dlp 2026.08.19; found {__version__}")
+    if __version__ != "2026.10.10.233141":
+        raise SystemExit(f"Expected yt-dlp 2026.10.10.233141; found {__version__}")
     source = Path(yt_dlp.__file__).parent
-    target = Path(__file__).resolve().parents[1] / "src-tauri/gen/android/app/src/main/assets/yt-dlp-2026.08.19.zip"
+    target = Path(__file__).resolve().parents[1] / "src-tauri/gen/android/app/src/main/assets/yt-dlp-runtime.zip"
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for module in (yt_dlp, yt_dlp_ejs):
             source = Path(module.__file__).parent

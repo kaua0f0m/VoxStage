@@ -760,7 +760,7 @@ async function searchYoutube(){
       ? mobileNative ? `${youtubeSearchResults.length} option(s). Choose one to download its audio to the device.` : `${youtubeSearchResults.length} option(s)${includeYoutube?' from YouTube Music and YouTube':' prioritizing YouTube Music tracks'}. Choose one to start the MVSep upload.`
       : mobileNative ? `${youtubeSearchResults.length} opção(ões). Escolha uma para baixar o áudio no aparelho.` : `${youtubeSearchResults.length} opção(ões)${includeYoutube?' do YouTube Music e do YouTube':' priorizando faixas do YouTube Music'}. Escolher inicia o envio para a MVSep.`;
     youtubeSearchResults.forEach((item,index)=>{
-      item.metadataState = item.artist && item.album ? 'loaded' : 'pending';
+      item.metadataState = 'loaded';
       const button=document.createElement('button');button.type='button';button.className='youtube-result';
       const thumbnail=document.createElement('img');thumbnail.className='youtube-result-thumb';thumbnail.alt='';thumbnail.loading='lazy';thumbnail.src=item.thumbnail||item.thumbnailFallback||'';
       thumbnail.onerror=()=>{if(item.thumbnailFallback&&thumbnail.src!==item.thumbnailFallback){thumbnail.src=item.thumbnailFallback;return;}thumbnail.hidden=true;};
@@ -768,9 +768,9 @@ async function searchYoutube(){
       const artistLine=document.createElement('small');artistLine.className='youtube-result-artist';artistLine.textContent=item.artist||'Buscando artista…';
       const albumLine=document.createElement('small');albumLine.className='youtube-result-album';albumLine.textContent=item.album||'Buscando álbum…';item.artistLabel=artistLine;item.albumLabel=albumLine;renderYoutubeMetadata(item);
       const action=document.createElement('span');action.textContent=mobileNative&&!mvsepConfigured?(interfaceLanguage==='en-US'?'Download →':'Baixar →'):(interfaceLanguage==='en-US'?'Separate →':'Separar →');
-      button.append(thumbnail,main,artistLine,albumLine,action);button.onclick=()=>mobileNative&&!mvsepConfigured?downloadYoutubeAudio(item):startYoutubeSeparation(item);$('youtubeResults').append(button);
+      button.append(thumbnail,main,artistLine,albumLine,action);button.onclick=()=>mobileNative&&!mvsepConfigured?downloadYoutubeAudio(item):startYoutubeSeparation(item);$('youtubeResults').append(button);renderYoutubeMetadata(item);
     });
-    enrichYoutubeMetadata(youtubeSearchResults,sequence);
+    // Use the catalog response. Opening every video here can trigger bot checks.
   }catch(error){showYoutubeError(error)}finally{$('youtubeSearch').disabled=false;}
 }
 function renderYoutubeMetadata(item){
@@ -894,7 +894,6 @@ async function startYoutubeSeparation(item){
   prefillYoutubeDraft(item, draftId);
   youtubeProcessing=true;$('youtubeSearch').disabled=true;document.querySelectorAll('.youtube-result').forEach(button=>button.disabled=true);$('youtubeProgress').hidden=false;updateYoutubeProgress({progress:1,indeterminate:true});$('youtubeStatus').textContent='Iniciando…';
   try{
-    if(!mobileNative)await ensureYoutubeMetadata(item).catch(()=>item);
     prefillYoutubeDraft(item, draftId);
     const selectedModel=String(processingSettings.mvsepModelId||'12');
     const started=await api('/api/youtube/separations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:item.url,title:item.title||'',artist:item.artist||'',modelId:selectedModel,modelOptions:processingSettings.mvsepOptionsByModel?.[selectedModel]||{}})});
@@ -962,7 +961,6 @@ async function downloadYoutubeAudio(item){
   youtubeProcessing=true;$('youtubeSearch').disabled=true;document.querySelectorAll('.youtube-result').forEach(button=>button.disabled=true);
   $('youtubeProgress').hidden=false;updateYoutubeProgress({progress:1,indeterminate:true});$('youtubeStatus').textContent=interfaceLanguage==='en-US'?'Downloading audio on this device…':'Baixando áudio no aparelho…';
   try{
-    await ensureYoutubeMetadata(item).catch(()=>item);
     prefillYoutubeDraft(item, draftId);
     const result=await api('/api/youtube/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:item.url})});
     updateUploadDraft(draftId, draft => {

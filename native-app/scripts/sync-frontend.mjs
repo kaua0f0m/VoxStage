@@ -21,6 +21,7 @@ for (const name of ['build-info.js','build-info.json','index.html', 'app.js', 's
   copyFileSync(resolve(projectRoot, name), resolve(webDist, name));
 }
 const androidResources = resolve(nativeRoot, 'src-tauri/gen/android/app/src/main/res');
+copyFileSync(resolve(projectRoot,'youtube_support.py'),resolve(nativeRoot,'src-tauri/gen/android/app/src/main/assets/youtube_support.py'));
 const androidIconSource = resolve(nativeRoot, 'assets/android-icons');
 for (const directory of ['drawable-v24', 'drawable', 'mipmap-anydpi-v26']) {
   const target = resolve(androidResources, directory);

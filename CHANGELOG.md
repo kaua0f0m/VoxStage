@@ -1,5 +1,13 @@
 # Changelog
 
+## Novidades da 1.1.2
+
+- Extrator do YouTube atualizado no Windows, Android e Google TV para acompanhar as mudanças do serviço.
+- Menos consultas repetidas: artista e álbum vêm da busca do YouTube Music, sem abrir cada resultado; pesquisas recentes são reaproveitadas e o download começa sem uma consulta extra de metadados.
+- Requisições espaçadas e pausa temporária quando o YouTube pede confirmação de robô, evitando tentativas em sequência. Alguns bloqueios por rede ainda podem exigir aguardar, trocar de rede ou importar o áudio de outra forma.
+
+Se não houverem mais bugs críticos, essa será a última versão do app. Ele já tem todas as features que minha mente queria que tivesse, e na medida do possível, está estavel para uso em todas as frentes (as que eu pude testar, que não incluiam processamento local no PC como exemplo).
+
 ## Novidades da 1.1.1
 
 - Pontuação mais compacta no Android em paisagem, com controles ocultos ao começar e acesso rápido para mostrá-los novamente. Tocar na letra com os controles ocultos pausa ou continua a música.
