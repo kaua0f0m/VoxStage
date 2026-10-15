@@ -2,6 +2,7 @@
 
 ## Novidades da 1.1.2
 
+- Busca de capas com recuperação de falhas de conexão, cache, proteção contra buscas duplicadas e espera indicada quando o serviço estiver indisponível.
 - Extrator do YouTube atualizado no Windows, Android e Google TV para acompanhar as mudanças do serviço.
 - Menos consultas repetidas: artista e álbum vêm da busca do YouTube Music, sem abrir cada resultado; pesquisas recentes são reaproveitadas e o download começa sem uma consulta extra de metadados.
 - Requisições espaçadas e pausa temporária quando o YouTube pede confirmação de robô, evitando tentativas em sequência. Alguns bloqueios por rede ainda podem exigir aguardar, trocar de rede ou importar o áudio de outra forma.

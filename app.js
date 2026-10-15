@@ -209,8 +209,11 @@ async function api(path, options = {}) {
   const response = await fetch(path, options);
   if (!response.ok) {
     const body = await response.text();
-    try { throw new Error(JSON.parse(body).error || `HTTP ${response.status}`); }
-    catch (error) { if (error instanceof SyntaxError) throw new Error(body.slice(0, 220) || `HTTP ${response.status}`); throw error; }
+    let detail; try { detail = JSON.parse(body); } catch {}
+    const error = new Error(detail?.error || (detail ? `HTTP ${response.status}` : body.slice(0, 220)) || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.retryAfter = Number(detail?.retryAfter || response.headers.get('Retry-After')) || 0;
+    throw error;
   }
   return response.status === 204 ? null : response.json();
 }
@@ -647,25 +650,65 @@ const artworkStyle = document.createElement('style');
 artworkStyle.textContent = `.artwork-search-open{margin-top:10px;padding:8px 11px;font-size:10px}.artwork-dialog{position:fixed;inset:0;z-index:42;display:none;place-items:center;padding:18px;background:#08090bdc;backdrop-filter:blur(12px)}.artwork-dialog.show{display:grid}.artwork-card{width:min(720px,100%);max-height:88vh;overflow:auto;padding:22px;border-radius:18px;background:linear-gradient(145deg,#202124,#141416);border:1px solid #414148;box-shadow:0 24px 80px #000b}.artwork-head{display:flex;justify-content:space-between;align-items:center}.artwork-head h2{font:700 21px Manrope;margin:5px 0 0}.artwork-card>p{color:#aaa;font-size:11px;line-height:1.5}.artwork-search{display:flex;gap:8px}.artwork-search input{flex:1;min-width:0;background:#111113;color:#f6f5f3;border:1px solid #3d3d42;border-radius:9px;padding:10px 12px;outline:none}.artwork-search .btn{padding:8px 13px;font-size:11px}.artwork-status{min-height:20px;margin-top:9px;color:#aaa;font-size:10px}.artwork-results{display:grid;gap:9px;grid-template-columns:repeat(2,minmax(0,1fr));max-height:56vh;overflow:auto}.artwork-result{display:grid;grid-template-columns:86px minmax(0,1fr);gap:10px;padding:9px;background:#171719;border:1px solid #333339;border-radius:11px;min-width:0}.artwork-result img{width:86px;height:86px;object-fit:cover;border-radius:7px;background:#252529}.artwork-meta{min-width:0}.artwork-meta strong,.artwork-meta small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.artwork-meta strong{font-size:11px}.artwork-meta small{color:#999;font-size:9px;margin-top:4px}.artwork-actions{display:flex;gap:5px;margin-top:9px}.artwork-actions button{padding:6px 7px;font-size:9px}.artwork-actions .btn.secondary{border-radius:8px}.artwork-loading{opacity:.6;pointer-events:none}@media(max-width:590px){.artwork-results{grid-template-columns:1fr}.artwork-card{padding:17px}.artwork-result{grid-template-columns:72px minmax(0,1fr)}.artwork-result img{width:72px;height:72px}.artwork-search{flex-direction:column}}`;
 artworkStyle.textContent += `.artwork-actions{flex-wrap:wrap}.artwork-actions button{flex:1 1 auto}`;
 document.head.append(artworkStyle);
+let artworkSearchSequence = 0, artworkSearchController = null, artworkActiveQuery = '', artworkSearchBusy = false;
+let artworkRetryUntil = 0, artworkRetryTimer = null;
+function refreshArtworkSearchButton() {
+  clearTimeout(artworkRetryTimer);
+  const seconds = Math.max(0, Math.ceil((artworkRetryUntil - Date.now()) / 1000));
+  $('artworkSearch').disabled = artworkSearchBusy || seconds > 0;
+  $('artworkSearch').textContent = seconds ? (interfaceLanguage==='en-US'?`Wait ${seconds}s`:`Aguarde ${seconds}s`) : (interfaceLanguage==='en-US'?'Search':'Buscar');
+  if (seconds && artworkDialog.classList.contains('show')) artworkRetryTimer = setTimeout(refreshArtworkSearchButton, 1000);
+}
+function closeArtworkDialog() {
+  artworkDialog.classList.remove('show');
+  artworkSearchSequence++;
+  artworkSearchController?.abort(); artworkSearchController = null;
+  artworkSearchBusy = false; refreshArtworkSearchButton();
+}
 function openArtworkDialog() {
+  closeArtworkDialog();
   const title = $('titleInput').value.trim(), artist = $('artistInput').value.trim();
   $('artworkQuery').value = [title, artist].filter(Boolean).join(' ');
   $('artworkResults').innerHTML = ''; $('artworkStatus').textContent = '';
   artworkDialog.classList.add('show');
+  refreshArtworkSearchButton();
   if ($('artworkQuery').value) searchArtwork();
 }
 async function searchArtwork() {
   const query = $('artworkQuery').value.trim(); if (!query) { $('artworkStatus').textContent = 'Digite o nome da música ou artista.'; return; }
+  if (artworkSearchBusy && artworkActiveQuery === query) return;
+  if (Date.now() < artworkRetryUntil) {
+    $('artworkStatus').textContent = 'O serviço de capas está temporariamente indisponível. Aguarde o tempo indicado para buscar novamente.';
+    refreshArtworkSearchButton(); return;
+  }
+  artworkSearchController?.abort();
+  const controller = new AbortController(), sequence = ++artworkSearchSequence;
+  artworkSearchController = controller; artworkActiveQuery = query; artworkSearchBusy = true;
+  refreshArtworkSearchButton();
+  const timeout = setTimeout(() => controller.abort(new DOMException('Tempo de busca esgotado.', 'TimeoutError')), 25000);
   $('artworkStatus').textContent = 'Buscando capas…'; $('artworkResults').innerHTML = '';
   try {
-    const {results} = await api('/api/covers/search', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});
+    let results;
+    for (let attempt=0; attempt<2; attempt++) {
+      try {
+        ({results} = await api('/api/covers/search', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query}),signal:controller.signal}));
+        break;
+      } catch (error) {
+        if (controller.signal.aborted || attempt || error.status || !/fetch|network|load failed/i.test(error.message || '')) throw error;
+        $('artworkStatus').textContent = 'A conexão com a busca de capas falhou. Tentando novamente…';
+        await new Promise(resolve => setTimeout(resolve, 500));
+        if (controller.signal.aborted) throw controller.signal.reason;
+      }
+    }
+    if (sequence !== artworkSearchSequence) return;
+    if (!Array.isArray(results)) throw new Error('O serviço de capas retornou uma resposta inválida. Tente novamente em alguns instantes.');
     $('artworkStatus').textContent = results.length ? `${results.length} resultado(s). As imagens serão salvas localmente.` : 'Não encontrei capas para esta busca.';
     $('artworkResults').innerHTML = results.map((result,index)=>`<article class="artwork-result"><img src="${esc(result.previewUrl)}" alt="Capa do álbum ${esc(result.title)}"><div class="artwork-meta"><strong>${esc(result.title)}</strong><small>${esc(result.artist)}${result.track ? ` · faixa: ${esc(result.track)}`:''}</small><div class="artwork-actions"><button class="btn secondary" data-art-use="${index}" data-art-role="cover">Usar como capa</button><button class="btn secondary" data-art-use="${index}" data-art-role="background">Usar como fundo</button><button class="btn secondary" data-art-use="${index}" data-art-role="both">Usar como ambos</button></div></div></article>`).join('');
     $('artworkResults').querySelectorAll('[data-art-use]').forEach(button=>button.onclick=async()=>{
       const draft = captureUploadDraft(), draftId = draft.id;
       draft.pendingAttachments = (draft.pendingAttachments || 0) + 1;
       artworkDialog.querySelectorAll('[data-art-use]').forEach(item => item.disabled = true);
-      artworkDialog.classList.remove('show');
+      closeArtworkDialog();
       toast('Aplicando a imagem escolhida…');
       try {
         const result=results[Number(button.dataset.artUse)]; const {name}=await api('/api/covers/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:result.imageUrl})});
@@ -678,9 +721,19 @@ async function searchArtwork() {
       } catch(error) { $('artworkStatus').textContent=error.message; toast(error.message); }
       finally { draft.pendingAttachments = Math.max(0, draft.pendingAttachments - 1); artworkDialog.querySelectorAll('[data-art-use]').forEach(item => item.disabled = false); }
     });
-  } catch(error) { $('artworkStatus').textContent=error.message; }
+  } catch(error) {
+    if (sequence !== artworkSearchSequence) return;
+    if (error.name === 'AbortError') return;
+    const wait = Number(error.retryAfter) || ([429,503].includes(error.status) ? 30 : 0);
+    if (Number.isFinite(wait) && wait > 0) artworkRetryUntil = Date.now() + wait * 1000;
+    $('artworkStatus').textContent = /fetch|network|load failed/i.test(error.message || '') || error.name === 'TimeoutError'
+      ? 'A conexão com a busca de capas falhou. Tente novamente em alguns instantes.' : error.message;
+  } finally {
+    clearTimeout(timeout);
+    if (sequence === artworkSearchSequence) { artworkSearchBusy = false; artworkSearchController = null; refreshArtworkSearchButton(); }
+  }
 }
-artworkSearchButton.onclick=openArtworkDialog; $('artworkSearch').onclick=searchArtwork; $('artworkQuery').onkeydown=event=>{if(event.key==='Enter')searchArtwork()}; $('artworkClose').onclick=()=>artworkDialog.classList.remove('show'); artworkDialog.onclick=event=>{if(event.target===artworkDialog)artworkDialog.classList.remove('show')};
+artworkSearchButton.onclick=openArtworkDialog; $('artworkSearch').onclick=searchArtwork; $('artworkQuery').onkeydown=event=>{if(event.key==='Enter')searchArtwork()}; $('artworkClose').onclick=closeArtworkDialog; artworkDialog.onclick=event=>{if(event.target===artworkDialog)closeArtworkDialog()};
 let mvsepConfigured = false;
 let youtubeSearchResults = [];
 let youtubeProcessing = false;

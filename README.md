@@ -168,7 +168,7 @@ VoxStage code; third-party licenses remain applicable.
 
 ## Novidades da 1.1.2
 
-Correções na importação do YouTube para Windows, Android e Google TV: extrator atualizado, menos consultas repetidas e recuperação mais cuidadosa de bloqueios. Veja os detalhes no [changelog](CHANGELOG.md).
+Correções na importação do YouTube para Windows, Android e Google TV, além de melhorias na recuperação de falhas da busca de capas. Veja os detalhes no [changelog](CHANGELOG.md).
 
 ## Novidades da 1.1.1
 

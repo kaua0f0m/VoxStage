@@ -183,6 +183,50 @@ async function main() {
     assert.equal(blockedRequests,1,'A bot block must stop further automatic video queries');
     await page.unroute('**/api/youtube/metadata');
     await page.locator('#titleInput').fill('Capa');
+    let coverRequests=0, coverMode='recover';
+    const coverResult={title:'Capa recuperada',artist:'Artista',previewUrl:'/cover.svg',imageUrl:'https://example.test/cover.jpg'};
+    await page.route('**/api/covers/search',async route=>{
+      coverRequests++;
+      if(coverMode==='recover'&&coverRequests===1||coverMode==='offline')return route.abort('connectionreset');
+      if(coverMode==='unavailable')return route.fulfill({status:503,json:{error:'Serviço temporariamente indisponível. Aguarde 2 segundos.',retryAfter:2}});
+      if(coverMode==='slow')await new Promise(resolve=>setTimeout(resolve,500));
+      return route.fulfill({json:{results:[coverResult]}});
+    });
+    await page.locator('#artworkSearchOpen').click();
+    await page.locator('.artwork-result').waitFor();
+    assert.equal(coverRequests,2,'One lost local connection recovers automatically once');
+    await page.locator('#artworkClose').click();
+    coverMode='offline';coverRequests=0;
+    await page.locator('#artworkSearchOpen').click();
+    await page.waitForFunction(()=>document.getElementById('artworkStatus').textContent.includes('Tente novamente em alguns instantes.'));
+    assert.equal(coverRequests,2,'A persistent fetch failure stops after the single recovery attempt');
+    assert.doesNotMatch(await page.locator('#artworkStatus').textContent(),/Failed to fetch/);
+    await page.locator('#artworkClose').click();
+    coverMode='unavailable';coverRequests=0;
+    await page.locator('#artworkSearchOpen').click();
+    await page.waitForFunction(()=>document.getElementById('artworkSearch').textContent.includes('Aguarde'));
+    assert.equal(await page.locator('#artworkSearch').isDisabled(),true);
+    await page.locator('#artworkQuery').press('Enter');
+    assert.equal(coverRequests,1,'503 is not retried during the provider wait');
+    await page.waitForFunction(()=>!document.getElementById('artworkSearch').disabled);
+    coverMode='slow';coverRequests=0;
+    await page.evaluate(()=>{searchArtwork();searchArtwork();searchArtwork();});
+    await page.locator('.artwork-result').waitFor();
+    assert.equal(coverRequests,1,'Repeated clicks share the current cover search');
+    await page.locator('#artworkClose').click();
+    const staleCovers=await page.evaluate(async()=>{
+      const original=api, pending={};
+      api=(path,options)=>path==='/api/covers/search'?new Promise(resolve=>{pending[JSON.parse(options.body).query]=resolve;}):original(path,options);
+      try {
+        artworkDialog.classList.add('show');$('artworkQuery').value='older';const older=searchArtwork();
+        $('artworkQuery').value='latest';const latest=searchArtwork();
+        pending.latest({results:[{title:'Latest result',artist:'Artist',previewUrl:'/cover.svg',imageUrl:'https://example.test/cover.jpg'}]});await latest;
+        pending.older({results:[{title:'Old result',artist:'Artist',previewUrl:'/cover.svg',imageUrl:'https://example.test/cover.jpg'}]});await older;
+        return $('artworkResults').textContent;
+      }finally{api=original;closeArtworkDialog();}
+    });
+    assert.match(staleCovers,/Latest result/);assert.doesNotMatch(staleCovers,/Old result/);
+    await page.unroute('**/api/covers/search');
     await page.locator('#artworkSearchOpen').click();
     await page.locator('[data-art-role="both"]').click();
     assert.equal(await page.locator('.artwork-dialog').isVisible(),false);

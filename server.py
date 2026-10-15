@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import http.client
 import base64
 import ctypes
@@ -26,6 +27,7 @@ from urllib.parse import quote, urlencode, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 from uuid import uuid4
+from email.utils import parsedate_to_datetime
 from youtube_support import (youtube_access, youtube_request_options, is_youtube_block,
                              youtube_catalog_fields, preserve_youtube_catalog_metadata)
 
@@ -93,19 +95,92 @@ def get_lan_ipv4():
     except OSError:
         pass
     return ""
+cover_search_lock = threading.Lock()
+cover_search_cache = {}
+cover_search_next_request = 0
+cover_search_blocked_until = 0
+
+
+class CoverSearchUnavailable(RuntimeError):
+    def __init__(self, message, retry_after=15):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def cover_retry_after(headers):
+    value = (headers or {}).get('Retry-After', '30')
+    try:
+        return max(30, int(value))
+    except (TypeError, ValueError):
+        try:
+            return max(30, math.ceil(parsedate_to_datetime(value).timestamp() - time.time()))
+        except (TypeError, ValueError, OverflowError):
+            return 30
+
+
 def search_covers(query):
+    global cover_search_next_request, cover_search_blocked_until
     query = str(query or "").strip()[:180]
     if len(query) < 2:
         raise ValueError("Digite pelo menos duas letras para buscar capas.")
+    key = " ".join(query.casefold().split())
+    # Coalesce repeated clicks/windows, including a retry after a lost local response.
+    with cover_search_lock:
+        now = time.monotonic()
+        cached = cover_search_cache.get(key)
+        if cached and cached[0] > now:
+            return [dict(item) for item in cached[1]]
+        if now < cover_search_blocked_until:
+            remaining = max(1, math.ceil(cover_search_blocked_until - now))
+            raise CoverSearchUnavailable(f'O serviço de capas está temporariamente indisponível. Aguarde {remaining} segundos para buscar novamente.', remaining)
+        time.sleep(max(0, cover_search_next_request - now))
+        try:
+            results = _search_covers_uncached(query)
+        except CoverSearchUnavailable as error:
+            cover_search_blocked_until = time.monotonic() + error.retry_after
+            raise
+        finally:
+            cover_search_next_request = time.monotonic() + 3.2
+        cover_search_cache[key] = (time.monotonic() + (900 if results else 60), results)
+        if len(cover_search_cache) > 128:
+            del cover_search_cache[next(iter(cover_search_cache))]
+        return [dict(item) for item in results]
+
+
+def _search_covers_uncached(query):
     # A busca de faixas traz o nome do álbum junto do resultado, resolvendo
     # músicas como "The Emptiness Machine" para o álbum "From Zero".
     url = "https://itunes.apple.com/search?" + urlencode({"term": query, "entity": "song", "limit": 16, "country": "br"})
     request = Request(url, headers={"User-Agent": "VoxStage/0.1 (local music library)", "Accept": "application/json"})
-    with urlopen(request, timeout=12) as response:
-        tracks = json.loads(response.read(3 * 1024 * 1024)).get("results", [])
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=8) as response:
+                data = response.read(3 * 1024 * 1024 + 1)
+                if len(data) > 3 * 1024 * 1024:
+                    raise ValueError('Resposta grande demais do catálogo de capas.')
+                payload = json.loads(data)
+                tracks = payload.get('results') if isinstance(payload, dict) else None
+                if not isinstance(tracks, list):
+                    raise ValueError('Resposta inválida do catálogo de capas.')
+                break
+        except HTTPError as error:
+            if error.code in {429, 503}:
+                wait = cover_retry_after(error.headers)
+                raise CoverSearchUnavailable(f'O serviço de capas respondeu HTTP {error.code}. Aguarde {wait} segundos antes de tentar novamente.', wait) from None
+            if attempt == 0 and error.code in {502, 504}:
+                time.sleep(3.2)
+                continue
+            raise CoverSearchUnavailable(f'Não consegui consultar o serviço de capas (HTTP {error.code}). Tente novamente em alguns instantes.') from None
+        except (URLError, TimeoutError, ConnectionError, http.client.HTTPException, ValueError):
+            if attempt == 0:
+                time.sleep(3.2)
+                continue
+            raise CoverSearchUnavailable('A conexão com o serviço de capas falhou. Aguarde alguns instantes e tente novamente.') from None
     results = []
     seen = set()
     for track in tracks:
+        if not isinstance(track, dict):
+            continue
         album = (track.get("collectionName") or "").strip()
         artwork = track.get("artworkUrl100") or ""
         album_id = track.get("collectionId")
@@ -1808,6 +1883,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"id": job_id, "stage": "starting"}, 202)
             except (ValueError, json.JSONDecodeError) as error:
                 return self.send_json({"error": str(error)}, 400)
+            except CoverSearchUnavailable as error:
+                return self.send_json({"error": str(error), "retryAfter": error.retry_after}, 503)
             except RuntimeError as error:
                 return self.send_json({"error": str(error)}, 503)
             except Exception as error:
