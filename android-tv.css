@@ -35,7 +35,6 @@ body.android-tv-app #display.tv-cover-visible:has(#mobileStageArtwork:not([hidde
 body.android-tv-app #display .stage-control-panel{left:3vw;right:3vw;bottom:18px;padding:12px 18px}
 body.android-tv-app #display .stage-hud{top:18px;left:3vw;right:3vw}
 body.android-tv-app #dispTrack{font-size:18px!important}
-body.android-tv-app #remoteTransferList{display:none!important}
 body.android-tv-app #display .stage-playback button{width:48px;height:48px}
 body.android-tv-app #display .stage-playback #dispPlay{width:56px;height:56px}
 body.android-tv-app #display .stage-tools-start .hud-btn,body.android-tv-app #display .stage-tools-end .hud-btn{height:44px;font-size:14px;padding:0 13px}
@@ -56,3 +55,9 @@ body.android-tv-app .remote-layout{grid-template-columns:265px minmax(0,1fr)}
 body.android-tv-app .remote-howto,body.android-tv-app .remote-panel-note{font-size:14px}
 body.android-tv-app .remote-request strong{font-size:15px}
 @media(max-width:1050px){body.android-tv-app .grid,body.android-tv-app .grid.compact-view{grid-template-columns:repeat(2,minmax(0,1fr))}body.android-tv-app .grid .track-title{font-size:15px}body.android-tv-app .filters{gap:8px}}
+/* The focus ring follows the actual control shape, including keyboard/D-pad focus. */
+body.voxstage-v2.android-tv-app[data-menu-device="tv"] :is(button,a,summary,[role="button"]){border-radius:12px}
+body.voxstage-v2.android-tv-app[data-menu-device="tv"] .track-play{border-radius:50%}
+body.voxstage-v2.android-tv-app[data-menu-device="tv"] :is(button,input,select,textarea,a,summary,[tabindex]):focus,
+body.voxstage-v2.android-tv-app[data-menu-device="tv"] #display.palco-livre :is(#quickExitDisplay,#mobileControlsToggle,button,input,select,textarea,a,summary,[tabindex]):focus{outline:none!important;box-shadow:0 0 0 2px #101216,0 0 0 5px var(--lime),0 0 0 8px #101216!important}
+body.voxstage-v2.android-tv-app[data-menu-device="tv"] .waveform-row:focus-within{border-radius:8px;box-shadow:0 0 0 3px var(--lime)}

@@ -4,6 +4,28 @@ let editingSong = null;
 let favoriteOnly = false;
 let showHiddenSongs = false;
 let compactTrackView = false;
+let libraryLyricsFilter = 'all';
+let libraryDisplayOrder = [];
+// Lyric filters affect the catalogue; playback order only follows its sort direction.
+function songHasSyncedLyrics(song) {
+  return Boolean(/\[\d+:\d+/.test(song.syncedLyrics || '') || song.lyricVoices && ['lead','parallel','backing'].some(voice => song.lyricVoices[voice]?.some(row => Number.isFinite(row.time))) || song.wordTimings?.some(row => Array.isArray(row) ? row.length : row?.words?.length));
+}
+function followingLibrarySongs() {
+  const ordered=songs.filter(song=>!song.hidden);
+  if(sorted)ordered.reverse();
+  const index=ordered.findIndex(song=>song.id===current?.id);
+  return index<0?ordered:ordered.slice(index+1);
+}
+function nextPlaybackSong() {
+  while(remoteSongQueue.length){const id=remoteSongQueue.shift();if(songs.some(song=>song.id===id&&!song.hidden))return id;}
+  return followingLibrarySongs()[0]?.id || null;
+}
+function addToPlaybackQueue(id) {
+  if(!songs.some(song=>song.id===id&&!song.hidden))return;
+  if(current?.id===id || remoteSongQueue.includes(id)){toast('Esta música já está tocando ou na fila.');return;}
+  remoteSongQueue.push(id);window.dispatchEvent(new Event('voxstage-queue-changed'));
+  toast('Música adicionada à fila.');
+}
 try { compactTrackView = localStorage.getItem('voxstage-library-view') === 'compact'; } catch {}
 let draftLyrics = null;
 // A draft belongs to an import/edit operation, not to the visibility of its dialog.
@@ -13,7 +35,8 @@ let activeUploadDraftId = 'new';
 function persistUploadDrafts() {
   try {
     localStorage.setItem('voxstage-upload-drafts', JSON.stringify([...uploadDrafts.values()].map(draft => ({
-      id: draft.id, title: draft.title, artist: draft.artist, editingId: draft.editingId,
+      id: draft.id, title: draft.title, artist: draft.artist, editingId: draft.editingId, youtubeUrl: draft.youtubeUrl, youtubeSelection: draft.youtubeSelection,
+      importSource: draft.importSource, importStep: draft.importStep, downloadVideo: draft.downloadVideo,
       lyrics: draft.lyrics, lyricStatus: draft.lyricStatus,
       files: draft.files.filter(item => item.name).map(({name, role, label}) => ({name, role, label}))
     }))));
@@ -74,10 +97,10 @@ let interfaceLanguage = 'pt-BR';
 try { interfaceLanguage = localStorage.getItem('voxstage-language') || 'pt-BR'; } catch {}
 let interfaceTheme = 'lime';
 try { interfaceTheme = localStorage.getItem('voxstage-theme') || 'lime'; } catch {}
-const localSeparationJobs = {};
 const mobileInvoke = window.__TAURI__?.core?.invoke;
 const mobileNative = /Android/i.test(navigator.userAgent) && typeof mobileInvoke === 'function';
 const androidTv = mobileNative && (() => { try { return Boolean(window.VoxStageMedia?.isTelevision()); } catch { return false; } })();
+const presentationDevice = window.VoxStageInterfaceFormat || (androidTv?'tv':mobileNative||matchMedia('(max-width:700px)').matches?'phone':'pc');
 let mobileMusicDirectory = '';
 const mobileStorageReady = mobileNative
   ? mobileInvoke('mobile_get_music_dir').then(path => { mobileMusicDirectory = path; })
@@ -135,9 +158,16 @@ async function mobileApi(path, options = {}) {
   if (androidTv && path.startsWith('/api/remote/')) {
     return mobileInvoke('mobile_tv_host_api', {path, method, body: options.body ? JSON.parse(options.body) : null});
   }
+  if(path==='/api/archives/inspect'&&method==='POST'&&options.body instanceof Blob){
+    const name=crypto.randomUUID()+'.zip';
+    await mobileApi('/api/files/'+name,{method:'PUT',body:options.body});
+    return mobileInvoke('mobile_archive',{action:'inspect',request:{name}});
+  }
+  const archiveAction=path.match(/^\/api\/archives\/(export|import|save|save-status)$/);
+  if(archiveAction&&method==='POST')return mobileInvoke('mobile_archive',{action:archiveAction[1],request:JSON.parse(options.body||'{}')});
   if (path === '/api/youtube/search' && method === 'POST') {
     const request = JSON.parse(options.body || '{}');
-    return {results: await mobileInvoke('mobile_youtube_search', {query: request.query || '', includeYoutube: Boolean(request.includeYoutube)})};
+    return {results: await mobileInvoke('mobile_youtube_search', {query: request.query || '', includeYoutube: Boolean(request.includeYoutube), youtubeOnly:Boolean(request.youtubeOnly)})};
   }
   if (path === '/api/youtube/download' && method === 'POST') {
     return mobileInvoke('mobile_youtube_download', {url: JSON.parse(options.body || '{}').url || ''});
@@ -147,10 +177,15 @@ async function mobileApi(path, options = {}) {
     return mobileInvoke('mobile_music_metadata', {title: request.title || '', url: request.url || ''});
   }
   if (path === '/api/covers/search' && method === 'POST') {
-    return {results: await mobileInvoke('mobile_cover_search', {query: JSON.parse(options.body || '{}').query || ''})};
+    const request = JSON.parse(options.body || '{}');
+    const result = await mobileInvoke('mobile_cover_search', {query:request.query || '',provider:request.provider || 'archive',artist:request.artist || ''});
+    if (result?.error) { const error=new Error(result.error);error.status=result.status;error.retryAfter=result.retryAfter;throw error; }
+    return Array.isArray(result) ? {results:result} : result;
   }
   if (path === '/api/covers/download' && method === 'POST') {
-    return mobileInvoke('mobile_cover_download', {url: JSON.parse(options.body || '{}').url || ''});
+    const result = await mobileInvoke('mobile_cover_download', {url: JSON.parse(options.body || '{}').url || ''});
+    if (result?.error) throw new Error(result.error);
+    return result;
   }
   if (path === '/api/mvsep/config' && method === 'GET') return mobileInvoke('mobile_mvsep_get_config');
   if (path === '/api/mvsep/config' && method === 'POST') {
@@ -174,7 +209,6 @@ async function mobileApi(path, options = {}) {
   const mvsepJob = path.match(/^\/api\/youtube\/separations\/([a-z0-9._-]{8,200})$/i);
   if (mvsepJob && method === 'GET') return mobileInvoke('mobile_mvsep_youtube_status', {jobHash: mvsepJob[1]});
   if (path === '/api/library' && method === 'GET') return mobileInvoke('mobile_get_library');
-  if (path === '/api/local/separations' && method === 'GET') return {jobs: []};
   if (path === '/api/library' && method === 'POST') {
     return mobileInvoke('mobile_save_song', {song: JSON.parse(options.body)});
   }
@@ -535,7 +569,6 @@ loadSongs = async function () {
     await mobileStorageReady;
     songs = await api('/api/library');
     songs.forEach(song => { song.coverUrl = mediaUrl(song.cover); });
-    try { const active = await api('/api/local/separations'); for (const job of active.jobs || []) localSeparationJobs[job.songId] = job; } catch {}
     render();
   } catch (error) {
     console.error(error);
@@ -545,11 +578,12 @@ loadSongs = async function () {
 
 render = function () {
   const query = $('search').value.toLowerCase();
-  const list = songs.filter(song => (showHiddenSongs || !song.hidden) && (!favoriteOnly || song.favorite) && `${song.title} ${song.artist}`.toLowerCase().includes(query));
+  const list = songs.filter(song => (showHiddenSongs || !song.hidden) && (!favoriteOnly || song.favorite) && (libraryLyricsFilter === 'all' || songHasSyncedLyrics(song) === (libraryLyricsFilter === 'ready')) && `${song.title} ${song.artist}`.toLowerCase().includes(query));
   if (sorted) list.reverse();
+  libraryDisplayOrder=list.map(song=>song.id);
   $('songCount').textContent = songs.filter(song => showHiddenSongs || !song.hidden).length;
   $('grid').classList.toggle('compact-view', compactTrackView);
-  $('grid').innerHTML = list.length ? list.map((song, index) => { const job=localSeparationJobs[song.id]; const localStatus=song.separationStatus==='pending'?(job?.stage==='error'?job.message:job?.message||'Faixa completa · pronta para tocar ou separar.'):'';return `<article class="track"><div class="cover c${index % 6 + 1}"><span class="cover-letter">${esc((song.title || '♫')[0].toUpperCase())}</span>${song.cover ? `<img class="cover-image" src="${mediaUrl(song.cover)}" alt="Capa de ${esc(song.title)}">` : ''}<button class="track-play" data-play="${song.id}" aria-label="Tocar ${esc(song.title)}">▶</button></div><div class="track-info"><div class="track-title" title="${esc(song.title)}">${esc(song.title)}</div><div class="track-artist">${esc(song.artist || 'Artista desconhecido')}</div><div class="track-meta"><span class="tag">${song.separationStatus === 'pending' ? 'Não separada' : song.back ? '3 stems' : '2 stems'}</span><div class="track-actions"><button class="action-icon ${song.favorite ? 'is-fav' : ''}" title="${song.favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}" aria-label="${song.favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}" data-fav="${song.id}">★</button><div class="track-menu-wrap"><button class="action-icon track-menu-toggle" title="Mais opções" aria-label="Mais opções para ${esc(song.title)}" aria-expanded="false" data-menu-toggle="${song.id}">⋮</button><div class="track-menu" data-track-menu="${song.id}" hidden>${song.source && !song.lead ? `<button type="button" data-mvsep-separate="${song.id}">✦ <span>Separar com MVSEP</span></button>` : ''}${song.separationStatus === 'pending' ? `<button type="button" data-local-separate="${song.id}" ${job&&job.stage!=='error'?'disabled':''}>✦ <span>${job&&job.stage!=='error'?'Separando…':'Separar no computador'}</span></button>`:''}<button type="button" data-edit="${song.id}">✎ <span>Editar música</span></button><button type="button" data-hide-song="${song.id}">◌ <span>${song.hidden ? "Mostrar música" : "Ocultar música"}</span></button><button type="button" class="menu-delete" data-delete="${song.id}">× <span>Apagar música</span></button></div></div></div></div>${localStatus?`<small class="local-separation-status" title="${esc(localStatus)}">${esc(localStatus)}</small>`:''}</div></article>`; }).join('') : `<div class="empty">${favoriteOnly ? 'Você ainda não favoritou músicas.' : songs.length ? 'Nenhuma música encontrada.' : 'Sua biblioteca está vazia. Adicione uma música para começar.'}</div>`;
+  $('grid').innerHTML = list.length ? list.map((song, index) => { return `<article class="track" data-song-id="${esc(song.id)}"><div class="cover c${index % 6 + 1}"><span class="cover-letter">${esc((song.title || '♫')[0].toUpperCase())}</span>${song.cover ? `<img class="cover-image" src="${mediaUrl(song.cover)}" alt="Capa de ${esc(song.title)}">` : ''}<button class="track-play" data-play="${song.id}" aria-label="Tocar ${esc(song.title)}">▶</button></div><div class="track-info"><div class="track-title" title="${esc(song.title)}">${esc(song.title)}</div><div class="track-artist">${esc(song.artist || 'Artista desconhecido')}</div><div class="track-meta"><span class="tag">${song.separationStatus === 'pending' ? 'Não separada' : song.back ? '3 stems' : '2 stems'}</span><div class="track-actions"><button class="action-icon ${song.favorite ? 'is-fav' : ''}" title="${song.favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}" aria-label="${song.favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}" data-fav="${song.id}">★</button><div class="track-menu-wrap"><button class="action-icon track-menu-toggle" title="Mais opções" aria-label="Mais opções para ${esc(song.title)}" aria-expanded="false" data-menu-toggle="${song.id}">⋮</button><div class="track-menu" data-track-menu="${song.id}" hidden><button type="button" data-add-queue="${esc(song.id)}">＋ <span>Adicionar à fila</span></button><button type="button" data-fav="${esc(song.id)}">☆ <span>${song.favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}</span></button>${song.source && !song.lead ? `<button type="button" data-mvsep-separate="${song.id}">✦ <span>Separar com MVSEP</span></button>` : ''}<button type="button" data-export-song="${song.id}">⇩ <span>Exportar música</span></button><button type="button" data-edit="${song.id}">✎ <span>Editar música</span></button><button type="button" data-hide-song="${song.id}">◌ <span>${song.hidden ? "Mostrar música" : "Ocultar música"}</span></button><button type="button" class="menu-delete" data-delete="${song.id}">× <span>Apagar música</span></button></div></div></div></div></div></article>`; }).join('') : `<div class="empty">${favoriteOnly ? 'Você ainda não favoritou músicas.' : songs.length ? 'Nenhuma música encontrada.' : 'Sua biblioteca está vazia. Adicione uma música para começar.'}</div>`;
   if (compactTrackView) document.querySelectorAll('.grid.compact-view .track').forEach(card => {
     const coverImage = card.querySelector('.cover-image');
     if (coverImage) card.style.setProperty('--track-cover', `url("${coverImage.src}")`);
@@ -570,10 +604,11 @@ render = function () {
     }
   }, {once: true}));
   document.querySelectorAll('[data-play]').forEach(button => button.onclick = () => playSong(button.dataset.play));
+  document.querySelectorAll('[data-add-queue]').forEach(button => button.onclick = () => addToPlaybackQueue(button.dataset.addQueue));
   document.querySelectorAll('[data-delete]').forEach(button => button.onclick = () => deleteSong(button.dataset.delete));
   document.querySelectorAll('[data-edit]').forEach(button => button.onclick = () => editSong(button.dataset.edit));
+  document.querySelectorAll('[data-export-song]').forEach(button=>button.onclick=()=>exportArchive(button.dataset.exportSong));
   document.querySelectorAll('[data-hide-song]').forEach(button => button.onclick = () => setSongHidden(button.dataset.hideSong));
-  document.querySelectorAll('[data-local-separate]').forEach(button => button.onclick = event => { event.stopPropagation(); runLocalSeparation(button.dataset.localSeparate); });
   document.querySelectorAll('[data-mvsep-separate]').forEach(button => button.onclick = () => runMvsepSeparation(button.dataset.mvsepSeparate));
   document.querySelectorAll('[data-fav]').forEach(button => button.onclick = () => toggleFavorite(button.dataset.fav));
   document.querySelectorAll('[data-menu-toggle]').forEach(button => button.onclick = event => {
@@ -642,22 +677,36 @@ document.head.append(videoDownloadStyle);
 
 const artworkDialog = document.createElement('div');
 artworkDialog.className = 'artwork-dialog'; artworkDialog.id = 'artworkDialog';
-artworkDialog.innerHTML = `<section class="artwork-card" role="dialog" aria-modal="true" aria-labelledby="artworkTitle"><header class="artwork-head"><div><span class="processing-kicker">CAPAS EM ALTA RESOLUÇÃO</span><h2 id="artworkTitle">Buscar capa da música</h2></div><button class="lyrics-close" id="artworkClose" aria-label="Fechar">×</button></header><p>Pesquise por música e artista. Escolha se quer aplicar o resultado como capa ou imagem de fundo.</p><div class="artwork-search"><input id="artworkQuery" placeholder="Nome da música e artista"><button class="btn" id="artworkSearch">Buscar</button></div><div class="artwork-status" id="artworkStatus"></div><div class="artwork-results" id="artworkResults"></div></section>`;
+artworkDialog.innerHTML = `<section class="artwork-card" role="dialog" aria-modal="true" aria-labelledby="artworkTitle"><header class="artwork-head"><div><span class="processing-kicker">CAPAS EM ALTA RESOLUÇÃO</span><h2 id="artworkTitle">Buscar capa da música</h2></div><button class="lyrics-close" id="artworkClose" aria-label="Fechar">×</button></header><p>Busque pelo nome da música ou do álbum, ou escolha uma miniatura do YouTube.</p><div class="artwork-provider"><label for="artworkProvider">Provedor</label><select id="artworkProvider"><option value="itunes">Apple/iTunes</option><option value="youtube">Miniatura do YouTube</option></select></div><div class="artwork-search"><input id="artworkQuery" aria-label="Música, álbum ou link" placeholder="Nome da música ou álbum"><button class="btn" id="artworkSearch">Buscar</button></div><small id="artworkProviderHint" class="artwork-provider-hint"></small><div class="artwork-status" id="artworkStatus" role="status"></div><button type="button" class="btn secondary artwork-archive-search" id="artworkArchiveSearch">Não encontrou seu resultado? Pesquise no Cover Art</button><div class="artwork-results" id="artworkResults"></div></section>`;
 document.body.append(artworkDialog);
 const artworkSearchButton = document.createElement('button');
 artworkSearchButton.type = 'button'; artworkSearchButton.className = 'btn secondary artwork-search-open'; artworkSearchButton.id = 'artworkSearchOpen'; artworkSearchButton.textContent = '⌕ Buscar capa na internet';
 const artworkStyle = document.createElement('style');
 artworkStyle.textContent = `.artwork-search-open{margin-top:10px;padding:8px 11px;font-size:10px}.artwork-dialog{position:fixed;inset:0;z-index:42;display:none;place-items:center;padding:18px;background:#08090bdc;backdrop-filter:blur(12px)}.artwork-dialog.show{display:grid}.artwork-card{width:min(720px,100%);max-height:88vh;overflow:auto;padding:22px;border-radius:18px;background:linear-gradient(145deg,#202124,#141416);border:1px solid #414148;box-shadow:0 24px 80px #000b}.artwork-head{display:flex;justify-content:space-between;align-items:center}.artwork-head h2{font:700 21px Manrope;margin:5px 0 0}.artwork-card>p{color:#aaa;font-size:11px;line-height:1.5}.artwork-search{display:flex;gap:8px}.artwork-search input{flex:1;min-width:0;background:#111113;color:#f6f5f3;border:1px solid #3d3d42;border-radius:9px;padding:10px 12px;outline:none}.artwork-search .btn{padding:8px 13px;font-size:11px}.artwork-status{min-height:20px;margin-top:9px;color:#aaa;font-size:10px}.artwork-results{display:grid;gap:9px;grid-template-columns:repeat(2,minmax(0,1fr));max-height:56vh;overflow:auto}.artwork-result{display:grid;grid-template-columns:86px minmax(0,1fr);gap:10px;padding:9px;background:#171719;border:1px solid #333339;border-radius:11px;min-width:0}.artwork-result img{width:86px;height:86px;object-fit:cover;border-radius:7px;background:#252529}.artwork-meta{min-width:0}.artwork-meta strong,.artwork-meta small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.artwork-meta strong{font-size:11px}.artwork-meta small{color:#999;font-size:9px;margin-top:4px}.artwork-actions{display:flex;gap:5px;margin-top:9px}.artwork-actions button{padding:6px 7px;font-size:9px}.artwork-actions .btn.secondary{border-radius:8px}.artwork-loading{opacity:.6;pointer-events:none}@media(max-width:590px){.artwork-results{grid-template-columns:1fr}.artwork-card{padding:17px}.artwork-result{grid-template-columns:72px minmax(0,1fr)}.artwork-result img{width:72px;height:72px}.artwork-search{flex-direction:column}}`;
-artworkStyle.textContent += `.artwork-actions{flex-wrap:wrap}.artwork-actions button{flex:1 1 auto}`;
+artworkStyle.textContent += `.artwork-actions{flex-wrap:wrap}.artwork-actions button{flex:1 1 auto}.artwork-provider{display:flex;gap:10px;align-items:center;margin:12px 0;color:#aaa;font-size:11px}.artwork-provider select{max-width:100%;padding:8px;border-radius:8px;border:1px solid #3d3d42;background:#171719;color:#f6f5f3}.artwork-archive-search{margin:0 0 12px;padding:9px 12px;font-size:11px;white-space:normal;text-align:left}.artwork-archive-search[hidden]{display:none}.artwork-provider-hint{display:block;margin-top:7px;color:#999;font-size:10px}`;
 document.head.append(artworkStyle);
 let artworkSearchSequence = 0, artworkSearchController = null, artworkActiveQuery = '', artworkSearchBusy = false;
-let artworkRetryUntil = 0, artworkRetryTimer = null;
+let artworkDisplayedKey = '', artworkDisplayedResults = [];
+const artworkArchiveCache = new Map();
+const artworkRetryUntil = {archive:0,itunes:0,youtube:0};let artworkRetryTimer = null;
+$('artworkProvider').value = localStorage.getItem('voxstage-artwork-provider-v2') === 'youtube' ? 'youtube' : 'itunes';
+function artworkQueryKey(query) { return query.trim().toLocaleLowerCase().replace(/\s+/g,' '); }
+function cachedArchiveArtwork(query) {
+  const key=artworkQueryKey(query),entry=artworkArchiveCache.get(key);
+  if(entry&&entry.expires>Date.now())return entry.results;
+  artworkArchiveCache.delete(key);return null;
+}
+function artworkWaitSeconds(provider=$('artworkProvider').value) {
+  return Math.max(0,Math.ceil(((artworkRetryUntil[provider]||0)-Date.now())/1000));
+}
 function refreshArtworkSearchButton() {
   clearTimeout(artworkRetryTimer);
-  const seconds = Math.max(0, Math.ceil((artworkRetryUntil - Date.now()) / 1000));
-  $('artworkSearch').disabled = artworkSearchBusy || seconds > 0;
-  $('artworkSearch').textContent = seconds ? (interfaceLanguage==='en-US'?`Wait ${seconds}s`:`Aguarde ${seconds}s`) : (interfaceLanguage==='en-US'?'Search':'Buscar');
-  if (seconds && artworkDialog.classList.contains('show')) artworkRetryTimer = setTimeout(refreshArtworkSearchButton, 1000);
+  const seconds=artworkWaitSeconds(),archiveSeconds=artworkWaitSeconds('archive');
+  $('artworkSearch').disabled=artworkSearchBusy||seconds>0;
+  $('artworkSearch').textContent=seconds?(interfaceLanguage==='en-US'?`Wait ${seconds}s`:`Aguarde ${seconds}s`):(interfaceLanguage==='en-US'?'Search':'Buscar');
+  $('artworkArchiveSearch').disabled=artworkSearchBusy||archiveSeconds>0;
+  $('artworkArchiveSearch').textContent=archiveSeconds?`Cover Art indisponível. Aguarde ${archiveSeconds}s`:'Não encontrou seu resultado? Pesquise no Cover Art';
+  if((seconds||archiveSeconds)&&artworkDialog.classList.contains('show'))artworkRetryTimer=setTimeout(refreshArtworkSearchButton,1000);
 }
 function closeArtworkDialog() {
   artworkDialog.classList.remove('show');
@@ -667,43 +716,16 @@ function closeArtworkDialog() {
 }
 function openArtworkDialog() {
   closeArtworkDialog();
-  const title = $('titleInput').value.trim(), artist = $('artistInput').value.trim();
-  $('artworkQuery').value = [title, artist].filter(Boolean).join(' ');
+  const title = $('titleInput').value.trim();
+  $('artworkQuery').value = title;
+  updateArtworkProvider();
   $('artworkResults').innerHTML = ''; $('artworkStatus').textContent = '';
   artworkDialog.classList.add('show');
   refreshArtworkSearchButton();
   if ($('artworkQuery').value) searchArtwork();
 }
-async function searchArtwork() {
-  const query = $('artworkQuery').value.trim(); if (!query) { $('artworkStatus').textContent = 'Digite o nome da música ou artista.'; return; }
-  if (artworkSearchBusy && artworkActiveQuery === query) return;
-  if (Date.now() < artworkRetryUntil) {
-    $('artworkStatus').textContent = 'O serviço de capas está temporariamente indisponível. Aguarde o tempo indicado para buscar novamente.';
-    refreshArtworkSearchButton(); return;
-  }
-  artworkSearchController?.abort();
-  const controller = new AbortController(), sequence = ++artworkSearchSequence;
-  artworkSearchController = controller; artworkActiveQuery = query; artworkSearchBusy = true;
-  refreshArtworkSearchButton();
-  const timeout = setTimeout(() => controller.abort(new DOMException('Tempo de busca esgotado.', 'TimeoutError')), 25000);
-  $('artworkStatus').textContent = 'Buscando capas…'; $('artworkResults').innerHTML = '';
-  try {
-    let results;
-    for (let attempt=0; attempt<2; attempt++) {
-      try {
-        ({results} = await api('/api/covers/search', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query}),signal:controller.signal}));
-        break;
-      } catch (error) {
-        if (controller.signal.aborted || attempt || error.status || !/fetch|network|load failed/i.test(error.message || '')) throw error;
-        $('artworkStatus').textContent = 'A conexão com a busca de capas falhou. Tentando novamente…';
-        await new Promise(resolve => setTimeout(resolve, 500));
-        if (controller.signal.aborted) throw controller.signal.reason;
-      }
-    }
-    if (sequence !== artworkSearchSequence) return;
-    if (!Array.isArray(results)) throw new Error('O serviço de capas retornou uma resposta inválida. Tente novamente em alguns instantes.');
-    $('artworkStatus').textContent = results.length ? `${results.length} resultado(s). As imagens serão salvas localmente.` : 'Não encontrei capas para esta busca.';
-    $('artworkResults').innerHTML = results.map((result,index)=>`<article class="artwork-result"><img src="${esc(result.previewUrl)}" alt="Capa do álbum ${esc(result.title)}"><div class="artwork-meta"><strong>${esc(result.title)}</strong><small>${esc(result.artist)}${result.track ? ` · faixa: ${esc(result.track)}`:''}</small><div class="artwork-actions"><button class="btn secondary" data-art-use="${index}" data-art-role="cover">Usar como capa</button><button class="btn secondary" data-art-use="${index}" data-art-role="background">Usar como fundo</button><button class="btn secondary" data-art-use="${index}" data-art-role="both">Usar como ambos</button></div></div></article>`).join('');
+function renderArtworkResults(results,startIndex=0) {
+    $('artworkResults').insertAdjacentHTML('beforeend', results.slice(startIndex).map((result,offset)=>{const index=startIndex+offset;return `<article class="artwork-result"><img src="${esc(result.previewUrl)}" alt="Capa do álbum ${esc(result.title)}"><div class="artwork-meta"><strong>${esc(result.title)}</strong><small>${esc(result.artist)}${result.track ? ` · faixa: ${esc(result.track)}`:''}</small><small>${esc([result.provider,result.releaseType==='Album'?'Álbum':result.releaseType].filter(Boolean).join(' · '))}</small><div class="artwork-actions"><button class="btn secondary" data-art-use="${index}" data-art-role="cover">Usar como capa</button><button class="btn secondary" data-art-use="${index}" data-art-role="background">Usar como fundo</button><button class="btn secondary" data-art-use="${index}" data-art-role="both">Usar como ambos</button></div></div></article>`;}).join(''));
     $('artworkResults').querySelectorAll('[data-art-use]').forEach(button=>button.onclick=async()=>{
       const draft = captureUploadDraft(), draftId = draft.id;
       draft.pendingAttachments = (draft.pendingAttachments || 0) + 1;
@@ -721,21 +743,106 @@ async function searchArtwork() {
       } catch(error) { $('artworkStatus').textContent=error.message; toast(error.message); }
       finally { draft.pendingAttachments = Math.max(0, draft.pendingAttachments - 1); artworkDialog.querySelectorAll('[data-art-use]').forEach(item => item.disabled = false); }
     });
-  } catch(error) {
-    if (sequence !== artworkSearchSequence) return;
-    if (error.name === 'AbortError') return;
-    const wait = Number(error.retryAfter) || ([429,503].includes(error.status) ? 30 : 0);
-    if (Number.isFinite(wait) && wait > 0) artworkRetryUntil = Date.now() + wait * 1000;
-    $('artworkStatus').textContent = /fetch|network|load failed/i.test(error.message || '') || error.name === 'TimeoutError'
-      ? 'A conexão com a busca de capas falhou. Tente novamente em alguns instantes.' : error.message;
-  } finally {
+}
+async function searchArtwork(source=$('artworkProvider').value) {
+  const query=$('artworkQuery').value.trim(),provider=$('artworkProvider').value;
+  if(!query){$('artworkStatus').textContent='Digite o nome da música ou álbum.';return;}
+  if(!['itunes','youtube','archive'].includes(source)||(source==='archive'&&provider!=='itunes'))return;
+  const displayKey=JSON.stringify([provider,artworkQueryKey(query)]),searchKey=JSON.stringify([source,query]);
+  if(artworkSearchBusy&&artworkActiveQuery===searchKey)return;
+  // Archive is an explicit second search, attached only to the current Apple query.
+  if(source==='archive'&&artworkDisplayedKey!==displayKey){
+    await searchArtwork(provider);
+    if($('artworkQuery').value.trim()!==query||$('artworkProvider').value!==provider||!artworkDialog.classList.contains('show'))return;
+    return searchArtwork('archive');
+  }
+  if(artworkWaitSeconds(source)){
+    $('artworkStatus').textContent='O serviço de capas está temporariamente indisponível. Aguarde o tempo indicado para buscar novamente.';
+    refreshArtworkSearchButton();return;
+  }
+  artworkSearchController?.abort();
+  const controller=new AbortController(),sequence=++artworkSearchSequence;
+  artworkSearchController=controller;artworkActiveQuery=searchKey;artworkSearchBusy=true;refreshArtworkSearchButton();
+  const timeout=setTimeout(()=>controller.abort(new DOMException('Tempo de busca esgotado.','TimeoutError')),25000);
+  const labels={itunes:'Apple/iTunes',archive:'Cover Art Archive',youtube:'YouTube'};
+  if(source!=='archive'){
+    artworkDisplayedKey=displayKey;artworkDisplayedResults=[];$('artworkResults').replaceChildren();
+  }
+  const results=artworkDisplayedResults;
+  const append=(batch,label)=>{
+    const seen=new Set(results.map(item=>JSON.stringify([item.provider,item.id||item.imageUrl,item.title]))),first=results.length;
+    for(const item of batch){
+      const result={...item,provider:item.provider||label},key=JSON.stringify([result.provider,result.id||result.imageUrl,result.title]);
+      if(!seen.has(key)){seen.add(key);results.push(result);}
+    }
+    renderArtworkResults(results,first);
+  };
+  $('artworkStatus').textContent=source==='archive'?'Buscando no Cover Art Archive; isso pode demorar.'+(results.length?' Você já pode escolher uma capa da Apple.':''):'Buscando capas no '+labels[source]+'…';
+  try {
+    let batch=source==='archive'?cachedArchiveArtwork(query):null;
+    const fromCache=batch!==null;
+    if(batch===null){
+      for(let attempt=0;attempt<2;attempt++){
+        try{
+          if(source==='youtube')batch=await searchYoutubeArtwork(query,controller.signal);
+          else ({results:batch}=await api('/api/covers/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,provider:source}),signal:controller.signal}));
+          break;
+        }catch(error){
+          if(controller.signal.aborted||attempt||error.status||!/fetch|network|load failed/i.test(error.message||''))throw error;
+          await new Promise(resolve=>setTimeout(resolve,500));
+          if(controller.signal.aborted)throw controller.signal.reason;
+        }
+      }
+    }
+    if(sequence!==artworkSearchSequence)return;
+    if(!Array.isArray(batch))throw new Error('O serviço de capas retornou uma resposta inválida. Tente novamente em alguns instantes.');
+    if(source==='archive'&&!fromCache){
+      artworkArchiveCache.set(artworkQueryKey(query),{results:batch,expires:Date.now()+(batch.length?900000:60000)});
+      // Keep the session cache bounded when looking up many different songs.
+      if(artworkArchiveCache.size>50)artworkArchiveCache.delete(artworkArchiveCache.keys().next().value);
+    }
+    append(batch,labels[source]);
+    if(source==='itunes'){
+      const cached=cachedArchiveArtwork(query);
+      if(cached)append(cached,labels.archive);
+    }
+    $('artworkStatus').textContent=results.length?results.length+' resultado(s). As imagens serão salvas localmente.':source==='archive'?'Não encontramos capas no Cover Art Archive para esta busca.':'Não encontramos capas no '+labels[source]+' para esta busca.';
+  }catch(error){
+    if(sequence!==artworkSearchSequence)return;
+    const wait=Number(error.retryAfter)||([429,503].includes(error.status)?30:0);
+    if(Number.isFinite(wait)&&wait>0)artworkRetryUntil[source]=Date.now()+wait*1000;
+    if(error.name==='AbortError'&&!controller.signal.reason?.name?.includes('Timeout'))return;
+    if(source==='itunes'){
+      const cached=cachedArchiveArtwork(query);
+      if(cached)append(cached,labels.archive);
+    }
+    const message=/fetch|network|load failed/i.test(error.message||'')||['TimeoutError','AbortError'].includes(error.name)
+      ? 'A conexão com a busca de capas falhou. Tente novamente em alguns instantes.':error.message;
+    $('artworkStatus').textContent=labels[source]+': '+message+(results.length?' As capas abaixo continuam disponíveis.':'');
+  }finally{
     clearTimeout(timeout);
-    if (sequence === artworkSearchSequence) { artworkSearchBusy = false; artworkSearchController = null; refreshArtworkSearchButton(); }
+    if(sequence===artworkSearchSequence){artworkSearchBusy=false;artworkSearchController=null;refreshArtworkSearchButton();}
   }
 }
-artworkSearchButton.onclick=openArtworkDialog; $('artworkSearch').onclick=searchArtwork; $('artworkQuery').onkeydown=event=>{if(event.key==='Enter')searchArtwork()}; $('artworkClose').onclick=closeArtworkDialog; artworkDialog.onclick=event=>{if(event.target===artworkDialog)closeArtworkDialog()};
+function updateArtworkProvider() {
+  const provider=$('artworkProvider').value;
+  $('artworkQuery').maxLength=provider==='youtube'?2048:180;
+  $('artworkQuery').placeholder=provider==='youtube'?'Busque a música ou cole um link do YouTube':'Nome da música ou álbum';
+  $('artworkProviderHint').textContent=provider==='itunes'?'Capas do catálogo da Apple. O Cover Art Archive pode ser consultado pelo botão abaixo.':'Miniaturas de vídeos do YouTube comum. Esta busca não inclui o catálogo do YouTube Music.';
+  $('artworkArchiveSearch').hidden=provider!=='itunes';
+  refreshArtworkSearchButton();
+}
+$('artworkProvider').onchange=()=>{
+  closeArtworkDialog();artworkDialog.classList.add('show');
+  const provider=$('artworkProvider').value;localStorage.setItem('voxstage-artwork-provider-v2',provider);
+  if(/^https?:/i.test($('artworkQuery').value))$('artworkQuery').value=$('titleInput').value.trim();
+  $('artworkResults').replaceChildren();$('artworkStatus').textContent='';updateArtworkProvider();
+  if($('artworkQuery').value)searchArtwork();
+};
+artworkSearchButton.onclick=openArtworkDialog; $('artworkSearch').onclick=()=>searchArtwork(); $('artworkArchiveSearch').onclick=()=>searchArtwork('archive'); $('artworkQuery').onkeydown=event=>{if(event.key==='Enter')searchArtwork()}; $('artworkClose').onclick=closeArtworkDialog; artworkDialog.onclick=event=>{if(event.target===artworkDialog)closeArtworkDialog()};
 let mvsepConfigured = false;
 let youtubeSearchResults = [];
+let youtubeSearchContext = null;
 let youtubeProcessing = false;
 let youtubeSearchSequence = 0;
 const youtubeMetadataCache = new Map();
@@ -807,6 +914,7 @@ async function searchYoutube(){
     const result=await api('/api/youtube/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,includeYoutube})});
     if(sequence!==youtubeSearchSequence)return;
     youtubeSearchResults=result.results||[];
+    youtubeSearchContext={query,includeYoutube};
     $('youtubeResults').replaceChildren();
     if(!youtubeSearchResults.length){$('youtubeStatus').textContent='Não encontrei vídeos para essa busca.';return;}
     $('youtubeStatus').textContent=interfaceLanguage==='en-US'
@@ -872,9 +980,43 @@ function ensureYoutubeMetadata(item){
 function prefillYoutubeDraft(item, draftId) {
   const query = $('youtubeQuery').value.trim();
   updateUploadDraft(draftId, draft => {
+    if (item.url) {draft.youtubeUrl = item.url;draft.youtubeSelection={url:item.url,title:item.title||'',artist:item.artist||'',album:item.album||'',source:item.source||''};}
     if (!draft.title.trim()) draft.title = item.title || (!/^https?:\/\//i.test(query) ? query : '');
     if (!draft.artist.trim()) draft.artist = item.artist || '';
   });
+  if(item.url) applyAutomaticYoutubeArtwork(item,draftId);
+}
+function youtubeArtworkResult(item) {
+  try {
+    const url=new URL(item.url);
+    if(!['https:','http:'].includes(url.protocol)||!['youtu.be','youtube.com','www.youtube.com','music.youtube.com','m.youtube.com'].includes(url.hostname))return null;
+    const id=url.hostname==='youtu.be'?url.pathname.split('/')[1]:url.searchParams.get('v')||url.pathname.split('/')[2];
+    if(!/^[A-Za-z0-9_-]{11}$/.test(id||''))return null;
+    return {id:`youtube-${id}`,title:item.album||item.title||'Miniatura do YouTube',artist:item.artist||'',track:item.title||'',provider:'YouTube',
+      previewUrl:`https://i.ytimg.com/vi/${id}/hqdefault.jpg`,imageUrl:`https://i.ytimg.com/vi/${id}/maxresdefault.jpg`};
+  } catch { return null; }
+}
+async function searchYoutubeArtwork(query,signal) {
+  const draft=captureUploadDraft(),selected=draft.youtubeSelection;
+  if(selected?.source==='YouTube' && query===$('titleInput').value.trim()) {
+    const result=youtubeArtworkResult(selected);if(result)return [result];
+  }
+  const fullQuery=query.trim();
+  const normalize=text=>text.trim().replace(/\s+/g,' ').toLowerCase();
+  const standardResults=youtubeSearchResults.filter(item=>item.source==='YouTube');
+  const cached=youtubeSearchContext && normalize(fullQuery)===normalize(youtubeSearchContext.query) && standardResults.length?standardResults:null;
+  const items=cached || (await api('/api/youtube/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:fullQuery,includeYoutube:true,youtubeOnly:true}),signal})).results || [];
+  return items.filter(item=>item.source!=='YouTube Music'&&!/^https?:\/\/music\.youtube\.com(?:\/|$)/i.test(item.url||'')).map(youtubeArtworkResult).filter(Boolean);
+}
+async function applyAutomaticYoutubeArtwork(item,draftId) {
+  const draft=uploadDrafts.get(draftId),art=youtubeArtworkResult(item);
+  if(!draft||!art||draft.youtubeArtworkAttempted===item.url||draft.files.some(file=>file.role==='cover'))return;
+  draft.youtubeArtworkAttempted=item.url;draft.pendingAttachments=(draft.pendingAttachments||0)+1;
+  try {
+    const {name}=await api('/api/covers/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:art.imageUrl})});
+    updateUploadDraft(draftId,target=>{if(target.youtubeSelection?.url===item.url&&!target.files.some(file=>file.role==='cover'))target.files.push({name,role:'cover',label:`${art.title} — YouTube`});});
+  } catch { /* Artwork is optional; never interrupt importing the song. */ }
+  finally {draft.pendingAttachments=Math.max(0,draft.pendingAttachments-1);}
 }
 function attachReceivedMvsepFiles(job, draftId, replaceOriginal = false) {
   const files = (job?.files || []).filter(file => typeof file.name === 'string' && file.name);
@@ -1108,9 +1250,13 @@ const isVideo = item.role === 'video' || item.file?.type.startsWith('video/');
       ? [['ignore', 'Não usar'], ['cover', 'Capa do álbum'], ['background', 'Imagem de fundo']]
       : isVideo ? [['ignore', 'Não usar'], ['video', 'Vídeo de fundo (mudo)']]
       : [['ignore', 'Não usar'], ['inst', 'Instrumental'], ['lead', 'Vocais principais'], ['back', 'Backing vocals'], ['source', 'Música completa · não separada']];
-    return `<div class="assignment"><span class="file-kind">${isVideo ? '▶' : isImage ? '▧' : '♫'}</span><span class="file-name" title="${esc(filename)}" ${mobileNative ? `role="button" tabindex="0" data-file-name="${index}"` : ''}>${esc(filename)}</span><select data-role="${index}">${options.map(([value, label]) => `<option value="${value}" ${item.role === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>`;
+    return `<div class="assignment"><span class="file-kind">${isVideo ? '▶' : isImage ? '▧' : '♫'}</span><span class="file-name" title="${esc(filename)}" ${mobileNative ? `role="button" tabindex="0" data-file-name="${index}"` : ''}>${esc(filename)}</span><select data-role="${index}">${options.map(([value, label]) => `<option value="${value}" ${item.role === value ? 'selected' : ''}>${label}</option>`).join('')}</select><button type="button" class="assignment-remove" data-remove-file="${index}" aria-label="Remover ${esc(filename)} do formulário" title="Remover do formulário">×</button></div>`;
   }).join('') : '<div class="assignment-empty">Depois da seleção, marque o papel de cada arquivo.</div>';
   document.querySelectorAll('[data-role]').forEach(select => select.onchange = () => { chosenFiles[Number(select.dataset.role)].role = select.value; updateSaveSongLabel(); captureUploadDraft(); });
+  $('assignments').querySelectorAll('[data-remove-file]').forEach(button => button.onclick = () => {
+    chosenFiles.splice(Number(button.dataset.removeFile), 1);
+    drawAssignments();
+  });
   document.querySelectorAll('[data-file-name]').forEach(node => {
     node.onclick = () => showFullFilename(chosenFiles[Number(node.dataset.fileName)], node);
     node.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); node.click(); } };
@@ -1207,54 +1353,6 @@ saveSong = async function () {
     console.error(error); toast('Falha ao salvar no disco. Confira a janela do servidor.');
   } finally { savedDraft.saving = false; }
 };
-
-const localAudioWarning = document.createElement('div'); localAudioWarning.className = 'local-audio-warning'; localAudioWarning.innerHTML = `<section role="alertdialog" aria-modal="true" aria-labelledby="localAudioWarningTitle"><span>ATENÇÃO · PROCESSAMENTO LOCAL</span><h2 id="localAudioWarningTitle">Uso alto de recursos</h2><p>A separação por IA pode usar bastante memória do sistema e da placa de vídeo, deixar o computador lento ou falhar em músicas longas. Feche outros programas pesados. CPU é a opção mais compatível; DirectML na GPU é experimental.</p><label><input id="localAudioWarningDismiss" type="checkbox"> Não mostrar novamente</label><footer><button type="button" class="btn secondary" id="localAudioWarningCancel">Cancelar</button><button type="button" class="btn" id="localAudioWarningContinue">Entendi, continuar</button></footer></section>`;
-document.body.append(localAudioWarning);
-let localAudioWarningResolver = null;
-function confirmLocalAudioProcessing() {
-  try { if (localStorage.getItem('voxstage-local-audio-warning-dismissed') === '1') return Promise.resolve(true); } catch {}
-  localAudioWarning.classList.add('show');
-  $('localAudioWarningDismiss').checked = false;
-  return new Promise(resolve => { localAudioWarningResolver = resolve; });
-}
-function closeLocalAudioWarning(accepted) {
-  localAudioWarning.classList.remove('show');
-  if (accepted && $('localAudioWarningDismiss').checked) { try { localStorage.setItem('voxstage-local-audio-warning-dismissed', '1'); } catch {} }
-  const resolve = localAudioWarningResolver; localAudioWarningResolver = null; resolve?.(accepted);
-}
-$('localAudioWarningCancel').onclick = () => closeLocalAudioWarning(false);
-$('localAudioWarningContinue').onclick = () => closeLocalAudioWarning(true);
-localAudioWarning.onclick = event => { if (event.target === localAudioWarning) closeLocalAudioWarning(false); };
-const localAudioWarningStyle = document.createElement('style');
-localAudioWarningStyle.textContent = `.local-audio-warning{position:fixed;inset:0;z-index:10020;display:none;place-items:center;padding:18px;background:#080607dc;backdrop-filter:blur(10px)}.local-audio-warning.show{display:grid}.local-audio-warning>section{width:min(470px,100%);padding:24px;border:1px solid #8b3b40;border-radius:17px;background:linear-gradient(150deg,#301c1e,#1b1719);box-shadow:0 24px 80px #000c;color:#f8eeee}.local-audio-warning>section>span{color:#ff8686;font:800 8px 'DM Sans',sans-serif;letter-spacing:1.15px}.local-audio-warning h2{margin:9px 0;font:750 22px Manrope,sans-serif}.local-audio-warning p{margin:0;color:#d2bfc0;font:12px/1.65 'DM Sans',sans-serif}.local-audio-warning label{display:flex;align-items:center;gap:8px;margin-top:17px;color:#eadfe0;font:11px 'DM Sans',sans-serif}.local-audio-warning input{accent-color:#fa777c}.local-audio-warning footer{display:flex;justify-content:flex-end;gap:8px;margin-top:19px}.local-audio-warning #localAudioWarningContinue{background:#f48589;color:#281214;border-color:#f48589}`;
-document.head.append(localAudioWarningStyle);
-
-async function runLocalSeparation(songId) {
-  const song = songs.find(item => item.id === songId);
-  if (!song || song.separationStatus !== 'pending') return;
-  if (localSeparationJobs[songId] && !['done', 'error'].includes(localSeparationJobs[songId].stage)) return;
-  try {
-    if (!await confirmLocalAudioProcessing()) return;
-    toast('Iniciando separação local…');
-    const started = await api('/api/local/separations', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({songId,backend:processingSettings.localAudioBackend||'cpu'})});
-    localSeparationJobs[songId] = {...started, songId}; render();
-    let job = started;
-    do {
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      job = await api(`/api/local/separations/${encodeURIComponent(started.id)}`);
-      localSeparationJobs[songId] = {...job, songId}; render();
-    } while (!['done','error','missing'].includes(job.stage));
-    if (job.stage !== 'done') throw new Error(job.message || 'A separação local não terminou.');
-    delete localSeparationJobs[songId];
-    await loadSongs();
-    toast('Separação local concluída. Vocal combinado e instrumental salvos.');
-  } catch (error) {
-    let message = error.message || 'Falha na separação local.';
-    try { message = JSON.parse(message).error || message; } catch {}
-    localSeparationJobs[songId] = {songId, stage:'error', message};
-    render(); toast(message);
-  }
-}
 
 deleteSong = async function (id) {
   const song = songs.find(item => item.id === id);
@@ -1439,7 +1537,7 @@ function startAudioSources(offset = playbackBase) {
   keepPlaybackUiAlive();
   syncUi();
   window.dispatchEvent(new CustomEvent('voxstage-score-playback', {detail:{type:'start'}}));
-  if (androidTv && !manualSyncState) window.dispatchEvent(new Event('voxstage-tv-song-started'));
+  if (presentationDevice==='tv' && !manualSyncState) window.dispatchEvent(new Event('voxstage-tv-song-started'));
 }
 
 function pausePlayback() {
@@ -1463,12 +1561,9 @@ function finishPlayback() {
   stopActiveSources();
   setPlayBusy(false);
   syncUi();
-  if (remoteSongQueue.length) {
-    const nextId = remoteSongQueue.shift();
-    void playSong(nextId);
-    return;
-  }
-  if (androidTv && !manualSyncState) window.dispatchEvent(new Event('voxstage-tv-song-ended'));
+  const nextId = !manualSyncState && nextPlaybackSong();
+  if (nextId) { void playSong(nextId); return; }
+  if (presentationDevice==='tv' && !manualSyncState) window.dispatchEvent(new Event('voxstage-tv-song-ended'));
 }
 
 const remoteSongQueue = [];
@@ -1477,13 +1572,15 @@ async function enqueueRemoteSong(songId) {
   if (current?.id === songId || remoteSongQueue.includes(songId)) return;
   if (!playing || !current) { await playSong(songId); return; }
   remoteSongQueue.push(songId);
+  window.dispatchEvent(new Event('voxstage-queue-changed'));
   toast(`Adicionada à fila (${remoteSongQueue.length}).`);
 }
 
 stopSong = function () {
   window.dispatchEvent(new CustomEvent('voxstage-score-playback', {detail:{type:'stop'}}));
-  if (typeof manualSyncState !== 'undefined' && manualSyncState) $('closeManualSync').click();
+  if (typeof manualSyncState !== 'undefined' && manualSyncState) {manualSyncReturn=null;$('closeManualSync').click();}
   stopPlaybackUiLoop();
+  if($('lyricSecondLine'))$('lyricSecondLine').hidden=true;
   playing = false;
   stopActiveSources();
   playbackBase = 0; playbackStartContextTime = 0; waveformPeaks = null;
@@ -1496,7 +1593,7 @@ stopSong = function () {
 };
 
 toggle = function () {
-  if (!current) { const first = songs.find(song => !song.hidden); if (first) playSong(first.id); else toast('Adicione uma música primeiro.'); return; }
+  if (!current) { const nextId = nextPlaybackSong(); if (nextId) playSong(nextId); else toast('Adicione uma música primeiro.'); return; }
   if (playing) pausePlayback(); else startAudioSources(playbackBase >= (current.buffers?.Inst?.duration || Infinity) ? 0 : playbackBase);
 };
 document.addEventListener('voxstage-media-control', event => {
@@ -1585,7 +1682,7 @@ function lyricWordEntries(text) {
   if (isBackingLyric(value)) value = value.trim().slice(1, -1);
   const entries = [];
   const add = (segment, parallel = false) => {
-    for (const match of segment.matchAll(/\S+/g)) entries.push({word: match[0], parallel});
+    for (const entry of VoxStageLyrics.wordEntries(segment)) entries.push({...entry,parallel});
   };
   let cursor = 0;
   for (const match of value.matchAll(/\[([^\]]+)\]/g)) {
@@ -1600,14 +1697,9 @@ function lyricWords(text) { return lyricWordEntries(text).map(entry => entry.wor
 function lyricEntriesMarkup(entries, className = 'lyric-word', decorate = () => '') {
   let markup = '', previousParallel = false;
   entries.forEach((entry, index) => {
-    if (entry.parallel) {
-      if (!previousParallel && index) markup += ' ';
-      if (!previousParallel) markup += '<span class="lyric-parallel-phrase">';
-      else markup += ' ';
-    } else {
-      if (previousParallel) markup += '</span>';
-      if (index) markup += ' ';
-    }
+    if(previousParallel&&!entry.parallel)markup+='</span>';
+    if(index)markup+=esc(entry.joiner||' ');
+    if(entry.parallel&&!previousParallel)markup+='<span class="lyric-parallel-phrase">';
     const classes = [className, entry.parallel ? 'parallel-vocal' : '', decorate(entry, index)].filter(Boolean).join(' ');
     markup += `<span class="${classes}">${esc(entry.word)}</span>`;
     previousParallel = entry.parallel;
@@ -1626,27 +1718,17 @@ function lyricTokenKey(value) {
 }
 function splitLegacyVoiceTimings(line, words = []) {
   const entries = lyricWordEntries(line?.text || '');
-  const positions = new Map();
-  entries.forEach((entry,index) => {
-    const key = lyricTokenKey(entry.word);
-    if (!key) return;
-    if (!positions.has(key)) positions.set(key, []);
-    positions.get(key).push(index);
-  });
-  const consumed = new Map(), lead = [], parallel = [], backing = [];
-  for (const cue of [...words].sort((a,b)=>Number(a.start)-Number(b.start))) {
-    const key = lyricTokenKey(cue.word), candidates = positions.get(key) || [];
-    const offset = consumed.get(key) || 0;
-    const position = candidates[offset] ?? candidates.at(-1);
-    if (position !== undefined) consumed.set(key, offset + 1);
-    const cloned = {...cue};
-    if (isBackingLyric(line?.text)) backing.push(cloned);
-    else if (position !== undefined && entries[position]?.parallel) { lead.push(cloned); parallel.push({...cloned}); }
+  const positions=VoxStageLyrics.cuePositions({text:VoxStageLyrics.joinEntries(entries),words});
+  const lead=[],parallel=[],backing=[];
+  for(const [index,cue] of positions){
+    const cloned={...cue};
+    if(isBackingLyric(line?.text))backing.push(cloned);
+    else if(entries[index]?.parallel){lead.push(cloned);parallel.push({...cloned});}
     else lead.push(cloned);
   }
   return {lead, parallel, backing};
 }
-function unifiedLyricsForSong(song) {
+function legacyUnifiedLyricsForSong(song) {
   const main = parseSyncedLyrics(song.syncedLyrics || '');
   const backing = parseSyncedLyrics(song.backingSyncedLyrics || '');
   const existingBacking = new Set(main.filter(line=>isBackingLyric(line.text)).map(line=>`${line.text.trim().slice(1,-1).trim().toLocaleLowerCase()}|${Math.round(line.time/250)}`));
@@ -1693,6 +1775,12 @@ function unifiedLyricsForSong(song) {
   });
   const syncedLyrics = rows.map(line=>`[${formatLrcTime(line.time/1000)}]${line.text}`).join('\n');
   return {syncedLyrics,plainLyrics:String(song.plainLyrics||'').trim()?song.plainLyrics:rows.map(line=>line.text).join('\n'),lyricLines:rows,wordTimings,parallelWordTimings,backingWordTimings,lyricLineEnds,backingLineEnds,parallelLineStarts};
+}
+function unifiedLyricsForSong(song) {
+  return song.lyricVoices?.version===1 ? VoxStageLyrics.project(song.lyricVoices) : legacyUnifiedLyricsForSong(song);
+}
+function hasStoredLyricText(song) {
+  return Boolean([song?.plainLyrics,song?.backingPlainLyrics,song?.parallelPlainLyrics].some(text=>String(text||'').trim()) || VoxStageLyrics.tracks.some(track=>song?.lyricVoices?.[track]?.length));
 }
 
 function lyricStatus(text) { const node = $('lyricsDialogStatus'); if (node) node.textContent = text; }
@@ -1764,9 +1852,9 @@ function hasLyricTrackingNear(ms) {
     }
     // Line-only lyrics still count as tracking even when the separator placed
     // the singer in the instrumental. Bound estimates so a long interlude can pause.
-    const markedEnd = isBackingLyric(line.text) ? current.backingLineEnds?.[index] : current.lyricLineEnds?.[index];
+    const markedEnd = (line.voice==='parallel' ? current.parallelLineEnds : isBackingLyric(line.text) ? current.backingLineEnds : current.lyricLineEnds)?.[index];
     const estimate = origin + Math.min(8000, Math.max(2200, lyricWordEntries(line.text).length * 550));
-    const next = lines.slice(index + 1).find(row => isBackingLyric(row.text) === isBackingLyric(line.text));
+    const next = lines.slice(index + 1).find(row => line.voice ? row.voice===line.voice : isBackingLyric(row.text) === isBackingLyric(line.text));
     const end = Math.min(markedEnd != null && Number(markedEnd) > origin ? Number(markedEnd) : estimate, next?.time ?? Infinity);
     return ms >= origin + offset - margin && ms <= origin + (end - origin) * speed + offset + margin;
   });
@@ -1867,7 +1955,9 @@ function setProfanityMute(muted) {
 function updateWordMarker(ms, lineIndex = current?.lyricIndex ?? -1) {
   const marker = $('lyricWordMarker'), parallelMarker = $('lyricParallelWordMarker');
   const hideMarkers = () => { if (marker) marker.hidden = true; if (parallelMarker) parallelMarker.hidden = true; };
-  if (current?.wordByWordEnabled === false || current?.vocalSilenceState?.silent) { hideMarkers(); return; }
+  if (current?.wordByWordEnabled === false || current?.vocalSilenceState?.silent) {
+    hideMarkers();$('lyricCurrentLine')?.querySelectorAll('.upcoming').forEach(word=>word.classList.remove('upcoming'));return;
+  }
   const line = current?.lyricLines?.[lineIndex];
   const host = $('lyricCurrentLine');
   if (!line || !host) { hideMarkers(); return; }
@@ -1882,7 +1972,7 @@ function updateWordMarker(ms, lineIndex = current?.lyricIndex ?? -1) {
   const offsetMs = Number(adjustment.offsetMs) || 0;
   const speedFactor = Math.max(.5, Math.min(2, Number(adjustment.speed) || 1));
   const normalized = value => value.toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
-  const nextLine = current.lyricLines.slice(lineIndex + 1).find(candidate=>!isBackingLyric(candidate.text));
+  const nextLine = current.lyricLines.slice(lineIndex + 1).find(candidate=>line.voice ? candidate.voice===line.voice : !isBackingLyric(candidate.text));
   const firstParallelIndex=allWords.findIndex(word=>word.classList.contains('parallel-vocal'));
   const lineWeights=estimateWordWeights(allWords.map(word=>word.textContent));
   const totalLineWeight=lineWeights.reduce((sum,weight)=>sum+weight,0);
@@ -1904,12 +1994,12 @@ function updateWordMarker(ms, lineIndex = current?.lyricIndex ?? -1) {
   };
   const timedActive = (targetWords, cues, origin = line.time) => {
     if (!cues.length) return null;
-    let timingIndex = 0, active = -1, lastMatched = null, matchedCount = 0, lastMatchedWordIndex = -1;
+    const positions=VoxStageLyrics.cuePositions({text:targetWords.map(node=>node.textContent).join(' '),words:cues});
+    let active = -1, lastMatched = null, matchedCount = 0, lastMatchedWordIndex = -1;
     targetWords.forEach((node, index) => {
-      const token = normalized(node.textContent);
-      while (timingIndex < cues.length && normalized(cues[timingIndex].word) !== token) timingIndex++;
-      if (timingIndex < cues.length) {
-        const timing = cues[timingIndex++]; lastMatched = timing; lastMatchedWordIndex = index;
+      const timing=positions.get(index);
+      if (timing) {
+        lastMatched = timing; lastMatchedWordIndex = index;
         matchedCount++;
         const adjustedStart = origin + (Number(timing.start) * 1000 - origin) * speedFactor + offsetMs;
         const adjustedEnd = origin + (Number(timing.end) * 1000 - origin) * speedFactor + offsetMs;
@@ -1937,6 +2027,8 @@ function updateWordMarker(ms, lineIndex = current?.lyricIndex ?? -1) {
   const parallelNextTime = Math.min(nextLine?.time ?? Infinity,nextParallelTime);
   const parallelActive = parallelWords.length && ms>=parallelOrigin ? (timedParallel === null ? fallbackActive(parallelWords, parallelOrigin,Number.isFinite(parallelNextTime)?parallelNextTime:undefined) : timedParallel) : -1;
   const showUpcoming = processingSettings.showUpcomingWordPreview === true;
+  const tokenEntries=lyricWordEntries(line.text);
+  const forcedNext=active>=0&&tokenEntries[active+1]?.joiner?active+1:-1;
   allWords.forEach((word, index) => {
     const parallelIndex=parallelWords.indexOf(word);
     const isActive=index===active || parallelIndex>=0 && parallelIndex===parallelActive;
@@ -1945,7 +2037,8 @@ function updateWordMarker(ms, lineIndex = current?.lyricIndex ?? -1) {
     word.classList.toggle('profanity', marked);
     word.setAttribute('aria-label', marked ? `${word.textContent} · palavrão detectado` : word.textContent);
     word.classList.toggle('active', isActive);
-    word.classList.toggle('upcoming', showUpcoming && isUpcoming && !isActive);
+    word.classList.toggle('voice1-active', isActive);
+    word.classList.toggle('upcoming', (showUpcoming&&isUpcoming||index===forcedNext)&&!isActive);
     word.classList.toggle('dimmed', !isActive);
   });
   const paired=words[active] && words[active]===parallelWords[parallelActive];
@@ -1963,7 +2056,10 @@ function updateWordMarker(ms, lineIndex = current?.lyricIndex ?? -1) {
     }
   };
   positionMarker(marker, words[active], 'wordMarkerKey', `${lineIndex}:${active}`);
-  positionMarker(parallelMarker, parallelWords[parallelActive], 'parallelWordMarkerKey', `${lineIndex}:parallel:${parallelActive}`);
+  if(!lyricPlaybackTracks().duet.some(row=>row.source==='parallel')) {
+    positionMarker(parallelMarker, parallelWords[parallelActive], 'parallelWordMarkerKey', `${lineIndex}:parallel:${parallelActive}`);
+    if(paired&&parallelMarker)parallelMarker.hidden=true;
+  }
 }
 
 function currentLyricAdjustment() {
@@ -1991,6 +2087,13 @@ async function changeCurrentLyricAdjustment(change) {
   else if (change.offsetMs) adjustment.offsetMs = Math.max(-3000, Math.min(3000, (Number(adjustment.offsetMs) || 0) + change.offsetMs));
   else if (change.speed) adjustment.speed = Math.round(Math.max(.5, Math.min(2, (Number(adjustment.speed) || 1) + change.speed)) * 10) / 10;
   if (change !== 'reset') song.lyricAdjustments[key] = adjustment;
+  if(current.lyricVoices) {
+    const rowId=current.lyricLines[current.lyricIndex]?.voiceId;
+    for(const model of [current.lyricVoices,song.lyricVoices]) for(const track of VoxStageLyrics.tracks) {
+      const row=model?.[track]?.find(item=>item.id===rowId);if(!row)continue;
+      if(change==='reset')delete row.adjustment;else row.adjustment={...adjustment};
+    }
+  }
   current.lyricAdjustments = song.lyricAdjustments;
   updateLyricAdjustmentLabel();
   updateWordMarker(playbackPosition() * 1000, current.lyricIndex);
@@ -1998,67 +2101,6 @@ async function changeCurrentLyricAdjustment(change) {
   catch (error) { console.error('Não foi possível salvar o ajuste desta linha', error); toast('Ajuste aplicado, mas não consegui salvá-lo.'); }
 }
 
-const localModelWarning = document.createElement('div');
-localModelWarning.className = 'local-model-warning'; localModelWarning.id = 'localModelWarning';
-localModelWarning.innerHTML = `<section class="local-model-card" role="alertdialog" aria-modal="true" aria-labelledby="localModelTitle" aria-describedby="localModelCopy"><div class="local-model-icon">!</div><span class="local-model-kicker">PROCESSAMENTO LOCAL · META MMS-FA</span><h2 id="localModelTitle">Este alinhamento pode pesar no computador</h2><p id="localModelCopy">O modelo multilíngue analisa o vocal para marcar cada palavra. Pode consumir vários GB de RAM e bastante CPU. A configuração atual do PyTorch é CPU-only, então este alinhamento ainda não usará a GPU.</p><p class="local-model-note">A alternativa manual por linha não usa modelos nem exige instalação. Continue apenas se quiser iniciar o alinhamento palavra a palavra.</p><div class="local-model-actions"><button class="local-model-cancel" id="cancelLocalModel">Agora não</button><button class="local-model-continue" id="continueLocalModel">Iniciar mesmo assim</button></div></section>`;
-document.body.append(localModelWarning);
-const localModelStyle = document.createElement('style');
-localModelStyle.textContent = `.local-model-warning{position:fixed;inset:0;z-index:100;display:none;place-items:center;padding:18px;background:#090708d9;backdrop-filter:blur(10px)}.local-model-warning.show{display:grid}.local-model-card{width:min(480px,100%);padding:25px;border-radius:18px;background:linear-gradient(145deg,#291719,#171416);border:1px solid #8f3d43;box-shadow:0 22px 80px #000c,0 0 34px #9b252522;color:#f4eeee}.local-model-icon{width:38px;height:38px;display:grid;place-items:center;border-radius:12px;background:#61252b;color:#ff8585;font:bold 23px 'DM Sans',sans-serif}.local-model-kicker{display:block;margin-top:17px;color:#ff777e;font-size:9px;font-weight:800;letter-spacing:1.8px}.local-model-card h2{margin:7px 0 10px;font:700 20px Manrope;line-height:1.3}.local-model-card p{margin:0;color:#d7c9ca;font-size:12px;line-height:1.6}.local-model-card .local-model-note{margin-top:11px;color:#f2a8a9;font-size:11px}.local-model-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:22px}.local-model-actions button{padding:10px 13px;border-radius:9px;font-size:11px;font-weight:700}.local-model-cancel{background:#302629;border:1px solid #574044;color:#eee}.local-model-continue{background:#a92e38;color:white}.local-model-continue:hover{background:#c83a45}@media(max-width:500px){.local-model-card{padding:20px}.local-model-actions{flex-direction:column-reverse}.local-model-actions button{width:100%}}`;
-document.head.append(localModelStyle);
-function closeLocalModelWarning(){localModelWarning.classList.remove('show');}
-async function alignCurrentLyrics() {
-  if (!current) { toast('Toque ou selecione uma música primeiro.'); return; }
-  if (!parseSyncedLyrics(current.syncedLyrics || '').length) { toast('O MMS-FA precisa de tempos por linha. Escolha Sync manual ou busque uma letra sincronizada.'); return; }
-  $('localModelCopy').textContent = alignmentDevice?.available && alignmentDevice?.mmsFaAvailable
-    ? `O MMS-FA vai analisar o vocal com ${alignmentDevice.device} (${alignmentDevice.backend}). A primeira execução baixa o modelo; ainda pode usar memória significativa. O modo manual por linha continua disponível.`
-    : 'O modelo multilíngue analisa o vocal para marcar cada palavra. Pode consumir vários GB de RAM e bastante CPU. O PyTorch atual está em CPU-only; a GPU ainda não foi configurada neste ambiente.';
-  localModelWarning.classList.add('show');
-  requestAnimationFrame(() => $('cancelLocalModel').focus());
-}
-$('cancelLocalModel').onclick = closeLocalModelWarning;
-localModelWarning.addEventListener('click', event => { if (event.target === localModelWarning) closeLocalModelWarning(); });
-document.addEventListener('keydown', event => { if (event.key === 'Escape' && localModelWarning.classList.contains('show')) closeLocalModelWarning(); });
-$('continueLocalModel').onclick = async () => {
-  closeLocalModelWarning();
-  const button = $('lyricSync');
-  button.disabled = true; button.textContent = '◌ Alinhando…';
-  try {
-    const song=songs.find(item=>item.id===current.id);
-    const sourceRows=parseSyncedLyrics(song?.syncedLyrics||current.syncedLyrics||'').filter(line=>!isBackingLyric(line.text));
-    const alignmentLyrics=serializeLrcTrack(sourceRows.map(line=>line.text),sourceRows.map(line=>line.time/1000));
-    const result = await api(`/api/align/${encodeURIComponent(current.id)}`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({syncedLyrics: alignmentLyrics, language: 'pt', execution: processingSettings.execution})
-    });
-    const rawLead=[],rawParallel=[];
-    for(const item of result.wordTimings||[]){
-      const source=sourceRows[Number(item.lineIndex)];
-      if(!source) continue;
-      const split=splitLegacyVoiceTimings(source,item.words||[]);
-      if(split.lead.length) rawLead.push({lineIndex:Number(item.lineIndex),words:split.lead});
-      if(split.parallel.length) rawParallel.push({lineIndex:Number(item.lineIndex),words:split.parallel});
-    }
-    if (song) {
-      song.wordTimings=rawLead;song.parallelWordTimings=rawParallel;
-      const unified=unifiedLyricsForSong(song);
-      current.syncedLyrics=unified.syncedLyrics;current.plainLyrics=unified.plainLyrics;current.wordTimings=unified.wordTimings;current.parallelWordTimings=unified.parallelWordTimings;current.backingWordTimings=unified.backingWordTimings;current.lyricLineEnds=unified.lyricLineEnds;current.backingLineEnds=unified.backingLineEnds;current.parallelLineStarts=unified.parallelLineStarts;current.lyricLines=unified.lyricLines;
-      await api('/api/library', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(song)});
-    }
-    updateLyrics(playbackPosition());
-    const count = [...rawLead,...rawParallel].reduce((sum, line) => sum + line.words.length, 0);
-    toast(`Sincronismo palavra a palavra salvo · ${count} palavras (MMS-FA · ${result.device === 'cuda' ? 'GPU' : 'CPU'})`);
-  } catch (error) {
-    console.error(error);
-    let details = error.message;
-    try { details = JSON.parse(details).error || details; } catch {}
-    const message = details.includes('requirements-align')
-      ? 'Para alinhar pelo áudio, instale as dependências locais indicadas no projeto e reinicie o VoxStage.'
-      : details;
-    toast(message || 'Não consegui alinhar as palavras.');
-  } finally {
-    button.disabled = false; button.textContent = '⟲ Sync';
-  }
-}
 function lyricPlaybackTracks() {
   if (!current) return {lead:[],backing:[],duet:[],silence:[],censor:[]};
   // Keep the five timelines separate. A line index is only a reference back to
@@ -2070,8 +2112,8 @@ function lyricPlaybackTracks() {
   lines.forEach((line,lineIndex) => {
     const startMs = Number(line.time);
     if (!Number.isFinite(startMs) || startMs < 0) return;
-    const track = isBackingLyric(line.text) ? backing : lead;
-    track.push({lineIndex,startMs,text:line.text,source:line.source});
+    const track = line.source==='parallel' ? duet : isBackingLyric(line.text) ? backing : lead;
+    track.push({lineIndex,startMs,text:line.text,source:line.source,activeWordIndices:line.activeWordIndices,phraseKey:lyricWords(line.text).map(lyricTokenKey).join(' ')});
     if (track === lead && lyricWordEntries(line.text).some(entry=>entry.parallel)) duet.push({lineIndex,startMs,text:line.text});
   });
   // An independently synced backing replaces the same phrase embedded in the
@@ -2079,12 +2121,13 @@ function lyricPlaybackTracks() {
   // source remain distinct.
   const explicitRows = backing.filter(row=>row.source==='backing');
   const backingRows = backing.filter(row=>row.source!=='inline-backing' || !explicitRows.some(explicit=>lyricTokenKey(explicit.text)===lyricTokenKey(row.text) && Math.abs(explicit.startMs-row.startMs)<8000));
+  display.classList.toggle('has-second-voice',duet.some(row=>row.source==='parallel'));
   const audioEnd = (current.buffers?.Inst?.duration || 0) * 1000;
-  backingRows.forEach((row,index) => {
-    const explicit = Number(current.backingLineEnds?.[row.lineIndex]);
-    const cues = current.backingWordTimings?.find(item=>Number(item.lineIndex)===row.lineIndex)?.words || [];
+  for(const [rows,ends,timings] of [[backingRows,current.backingLineEnds,current.backingWordTimings],[duet,current.parallelLineEnds,current.parallelWordTimings],[lead,current.lyricLineEnds,current.wordTimings]]) rows.forEach((row,index) => {
+    const explicit = Number(ends?.[row.lineIndex]);
+    const cues = timings?.find(item=>Number(item.lineIndex)===row.lineIndex)?.words || [];
     const cueEnd = cues.reduce((last,cue)=>Math.max(last,Number(cue.end)*1000||0),0);
-    const nextStart = backingRows[index+1]?.startMs ?? Infinity;
+    const nextStart = rows[index+1]?.startMs ?? Infinity;
     const plausible = value => Number.isFinite(value) && value > row.startMs && (!audioEnd || value < audioEnd-120 || value-row.startMs < 15000);
     // A backing without a marked end must never remain active until a distant
     // phrase. The short estimate is only a visual fallback.
@@ -2097,6 +2140,80 @@ function lyricPlaybackTracks() {
 function backingLineEndMs(index) {
   return lyricPlaybackTracks().backing.find(row=>row.lineIndex===index)?.endMs ?? 0;
 }
+function updateParallelLyrics(seconds=0) {
+  if(!current)return;
+  const ms=seconds*1000,tracks=lyricPlaybackTracks(),rows=tracks.duet.filter(row=>row.source==='parallel');
+  const latest=rows.findLast(item=>ms>=item.startMs);
+  const lead=tracks.lead.find(item=>item.lineIndex===current.lyricIndex);
+  const leadAtTime=lead&&ms>=lead.startMs&&ms<lead.endMs?lead:null;
+  // Once the same phrase has met, keep its single visual in place until either
+  // track advances. Ending one voice must not move the phrase into the solo lane.
+  // Derive this from the timelines so seeking gives the same result as playback.
+  const merged=Boolean(latest&&lead&&latest.phraseKey&&latest.phraseKey===lead.phraseKey
+    && Math.max(latest.startMs,lead.startMs)<Math.min(latest.endMs,lead.endMs)
+    && ms>=Math.max(latest.startMs,lead.startMs));
+  const soloHeld=latest&&(!lead||latest.startMs>=lead.endMs);
+  const row=latest&&(ms<latest.endMs||merged||soloHeld)?latest:null,lineIndex=row?.lineIndex??-1;
+  const rowActive=Boolean(row&&ms<row.endMs);
+  const leadNode=$('lyricCurrentLine'),root=$('lyrics'),wordMode=current.wordByWordEnabled!==false;
+  root.classList.toggle('voices-overlap',Boolean(rowActive&&leadAtTime));
+  root.classList.toggle('voices-merged',merged);
+  let node=$('lyricSecondLine');
+  if(!node){node=document.createElement('span');node.id='lyricSecondLine';node.className='lyric-second-line';document.querySelector('.display-content').append(node);}
+  const words=current.parallelWordTimings?.find(item=>Number(item.lineIndex)===lineIndex)?.words||[];
+  const raw=row?current.lyricLines[lineIndex].text:'';
+  const signature=JSON.stringify([current.id,lineIndex,raw,wordMode,processingSettings.markProfanity,current.profanityMarks]);
+  if(node.dataset.signature!==signature){
+    node.innerHTML=row?`<small class="lyric-voice-label">${interfaceLanguage==='en-US'?'Voice 2':'Voz 2'}</small>${lyricWordMarkup(raw,'second-lyric-word',lineIndex)}`:'';
+    node.dataset.signature=signature;
+  }
+  node.hidden=!row||merged;
+  if(leadNode&&current.lyricVoices){
+    // Keep the main block's geometry while a different phrase is sung above it.
+    leadNode.hidden=false;
+    leadNode.classList.toggle('voice-ended',Boolean(row&&!merged&&(!lead||ms>=lead.endMs)));
+  }
+  const spans=[...node.querySelectorAll('.second-lyric-word')];let active=-1;
+  if(rowActive&&wordMode){
+    const positions=VoxStageLyrics.cuePositions({text:lyricWords(raw).join(' '),words});
+    for(const [index,cue] of positions)if((!row.activeWordIndices||row.activeWordIndices.includes(index))&&ms>=cue.start*1000&&ms<=cue.end*1000+240)active=index;
+    if(!words.length){const targets=row.activeWordIndices||spans.map((_,index)=>index);active=targets[Math.min(targets.length-1,Math.max(0,Math.floor((ms-row.startMs)/Math.max(1,row.endMs-row.startMs)*targets.length)))]??-1;}
+  }
+  const nextPart=active>=0&&lyricWordEntries(raw)[active+1]?.joiner&&(!row.activeWordIndices||row.activeWordIndices.includes(active+1))?active+1:-1;
+  spans.forEach((span,index)=>{span.classList.toggle('active',index===active);span.classList.toggle('upcoming',index===nextPart);});
+  const sharedSpans=[...(leadNode?.querySelectorAll('.lyric-word,.lyric-censor-word')||[])];
+  sharedSpans.forEach((span,index)=>{
+    const firstActive=Boolean(wordMode&&(!current.lyricVoices||leadAtTime)&&span.classList.contains('voice1-active')),secondActive=merged&&index===active;
+    span.classList.toggle('voice1-active',firstActive);
+    span.classList.toggle('voice2-active',secondActive);
+    span.classList.toggle('voices-active',firstActive&&secondActive);
+    if(merged){
+      span.classList.toggle('active',firstActive||secondActive);
+      span.classList.toggle('dimmed',!firstActive&&!secondActive);
+      if(secondActive)span.classList.remove('upcoming');
+      else if(index===nextPart)span.classList.add('upcoming');
+    }
+    const marked=processingSettings.markProfanity===true&&(isProfanityOccurrence(current.lyricIndex,index,span.textContent)||merged&&isProfanityOccurrence(lineIndex,index,span.textContent));
+    span.classList.toggle('profanity',marked);
+    span.setAttribute('aria-label',marked?span.textContent+' · palavrão detectado':span.textContent);
+  });
+  const marker=$('lyricParallelWordMarker'),leadMarker=$('lyricWordMarker');
+  if(current.lyricVoices&&!leadAtTime&&leadMarker)leadMarker.hidden=true;
+  if(rows.length&&marker){
+    const target=merged?sharedSpans[active]:spans[active];
+    marker.hidden=!target||current.vocalSilenceState?.silent;
+    if(!marker.hidden){
+      const outer=marker.parentElement.getBoundingClientRect(),rect=target.getBoundingClientRect();
+      marker.style.left=`${rect.left-outer.left+rect.width/2}px`;marker.style.top=`${rect.top-outer.top-5}px`;
+      const markerKey=`voice2:${lineIndex}:${active}`;
+      if(current.parallelWordMarkerKey!==markerKey){marker.classList.remove('hopping');void marker.offsetWidth;marker.classList.add('hopping');current.parallelWordMarkerKey=markerKey;}
+    }else current.parallelWordMarkerKey=null;
+    const paired=Boolean(merged&&!marker.hidden&&!leadMarker?.hidden&&target?.classList.contains('voice1-active'));
+    marker.classList.toggle('paired',paired);leadMarker?.classList.toggle('paired',paired);
+    if(paired)marker.hidden=true;
+  }
+}
+
 function updateBackingLyrics(seconds = 0) {
   if (!current) return;
   const ms = seconds * 1000;
@@ -2121,12 +2238,12 @@ function updateBackingLyrics(seconds = 0) {
   let active = -1;
   if (wordMode && wordSpans.length) {
     const normalized = value => value.toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
-    let timingIndex = 0, matched = false, lastMatched = null;
+    const positions=VoxStageLyrics.cuePositions({text:wordSpans.map(word=>word.textContent).join(' '),words:wordTimings});
+    let matched = false, lastMatched = null;
     wordSpans.forEach((word, wordIndex) => {
-      const token = normalized(word.textContent);
-      while (timingIndex < wordTimings.length && normalized(wordTimings[timingIndex].word) !== token) timingIndex++;
-      if (timingIndex < wordTimings.length) {
-        const timing = wordTimings[timingIndex++]; matched = true; lastMatched = {timing, wordIndex};
+      const timing=positions.get(wordIndex);
+      if (timing) {
+        matched = true; lastMatched = {timing, wordIndex};
         if (ms >= Number(timing.start) * 1000 && ms <= (Number(timing.end) * 1000 + 240)) active = wordIndex;
       }
     });
@@ -2141,7 +2258,8 @@ function updateBackingLyrics(seconds = 0) {
       while (active < weights.length - 1 && cursor >= weights[active]) cursor -= weights[active++];
     }
   }
-  wordSpans.forEach((word, wordIndex) => word.classList.toggle('active', wordIndex === active));
+  const nextPart=active>=0&&lyricWordEntries(rawText)[active+1]?.joiner?active+1:-1;
+  wordSpans.forEach((word,wordIndex)=>{word.classList.toggle('active',wordIndex===active);word.classList.toggle('upcoming',wordIndex===nextPart);});
   const marker = $('lyricBackingWordMarker');
   if (marker && !current.vocalSilenceState?.silent && wordMode && index >= 0 && active >= 0 && wordSpans[active]) {
     const displayRect = marker.parentElement.getBoundingClientRect(), wordRect = wordSpans[active].getBoundingClientRect();
@@ -2163,9 +2281,10 @@ function updateLyrics(seconds = 0) {
   if (!current) return;
   const censorTime = seconds + (playing ? (current.engine?.latencySeconds || 0) * (current.engine?.speed || 1) : 0);
   setProfanityMute(!manualSyncState && activeCensorCue(censorTime*1000));
-  if (manualSyncState?.mode !== 'silence' && manualSyncState) { renderManualSyncStagePreview(); updateVocalPause(seconds); return; }
+  if (manualSyncState?.mode !== 'silence' && manualSyncState) { if($('lyricSecondLine'))$('lyricSecondLine').hidden=true; renderManualSyncStagePreview(); updateVocalPause(seconds); return; }
   if (!current.lyricLines?.length) {
-    const showUnsyncedHint=Boolean(String(current.plainLyrics || '').trim()), lyricsNode=$('lyrics');
+    if($('lyricSecondLine'))$('lyricSecondLine').hidden=true;
+    const showUnsyncedHint=hasStoredLyricText(current), lyricsNode=$('lyrics');
     if (!lyricsNode.querySelector('#lyricPauseIndicator') || lyricsNode.dataset.unsyncedHint !== String(showUnsyncedHint) || lyricsNode.dataset.lyricSongId !== String(current.id)) {
       lyricsNode.innerHTML = showUnsyncedHint
         ? '<span class="lyric-unsynced-hint">Letra salva sem sincronização<br><small>Abra Sync para marcar os tempos</small></span><span class="lyric-pause" id="lyricPauseIndicator" aria-label="Pausa vocal" hidden><i></i><i></i><i></i><span class="lyric-pause-clock" hidden></span></span>'
@@ -2185,7 +2304,7 @@ function updateLyrics(seconds = 0) {
   const index = activeLead?.lineIndex ?? -1;
   const nextIndex = leadRows.find(row=>row.lineIndex>index)?.lineIndex;
   updateBackingLyrics(seconds);
-  if (current.lyricIndex === index) { positionVocalPause(seconds, index); updateWordMarker(ms, index); updateLyricAdjustmentLabel(); return; }
+  if (current.lyricIndex === index) { positionVocalPause(seconds, index); updateWordMarker(ms, index); updateParallelLyrics(seconds); updateLyricAdjustmentLabel(); return; }
   current.lyricIndex = index;
   const line = index >= 0 ? current.lyricLines[index]?.text || '' : '';
   const next = nextIndex !== undefined ? current.lyricLines[nextIndex]?.text || '' : '';
@@ -2203,6 +2322,7 @@ function updateLyrics(seconds = 0) {
   $('lyrics').classList.add('lyric-slide');
   positionVocalPause(seconds, index);
   updateWordMarker(ms, index);
+  updateParallelLyrics(seconds);
   updateLyricAdjustmentLabel();
   const miniLine = $('nowLyric');
   if (miniLine) { miniLine.textContent = line; miniLine.hidden = !line; }
@@ -2311,7 +2431,9 @@ async function useLyricCandidate(matchOrIndex, context = lyricsDialogContext) {
   const lines = parseSyncedLyrics(match.syncedLyrics);
   const plainLyrics = match.plainLyrics || (match.syncedLyrics ? match.syncedLyrics.split(/\r?\n/).map(row => row.replace(/^\s*\[[^\]]+\]\s*/, '')).join('\n') : '');
   if (!lines.length && !plainLyrics.trim()) { lyricStatus('Esta versão não trouxe texto de letra. Escolha outra.'); return; }
-  const selection = {syncedLyrics: lines.length ? match.syncedLyrics : '', plainLyrics, lyricTrack: match.trackName || current?.title || $('titleInput').value, lyricArtist: match.artistName || current?.artist || $('artistInput').value, lyricProvider: match.lyricProvider || 'LRCLIB', wordTimings: [], parallelWordTimings: [], parallelLineStarts: [], lyricLineEnds: [], backingSyncedLyrics: '', backingPlainLyrics: '', backingWordTimings: [], backingLineEnds: []};
+  let selection = {syncedLyrics: lines.length ? match.syncedLyrics : '', plainLyrics, lyricTrack: match.trackName || current?.title || $('titleInput').value, lyricArtist: match.artistName || current?.artist || $('artistInput').value, lyricProvider: match.lyricProvider || 'LRCLIB', lyricVoices:null, wordTimings: [], parallelWordTimings: [], parallelLineStarts: [], parallelLineEnds: [], parallelSyncedLyrics:'',parallelPlainLyrics:'',lyricLineEnds: [], backingSyncedLyrics: '', backingPlainLyrics: '', backingWordTimings: [], backingLineEnds: []};
+  const incomingVoices=VoxStageLyrics.fromLegacy(selection,legacyUnifiedLyricsForSong(selection),lyricWordEntries);
+  selection={...selection,...VoxStageLyrics.storage(incomingVoices)};
   if (context === 'draft') {
     draftLyrics = selection;
     $('draftLyricsStatus').textContent = `Letra selecionada: ${match.trackName} — ${match.artistName}${lines.length ? '' : ' · precisa sincronizar'}`;
@@ -2319,7 +2441,19 @@ async function useLyricCandidate(matchOrIndex, context = lyricsDialogContext) {
     closeLyricsDialog(); return;
   }
   if (!current) return;
+  if(!lines.length && (current.lyricLines?.length || current.lyricVoices)) {
+    const voices=VoxStageLyrics.fromLegacy(current,current.lyricLines?current:unifiedLyricsForSong(current),lyricWordEntries);
+    const incoming=VoxStageLyrics.fromLegacy(selection,{lyricLines:[]},lyricWordEntries);
+    for(const track of VoxStageLyrics.tracks)if(incoming[track].length)
+      voices[track]=VoxStageLyrics.reconcile(voices[track],VoxStageLyrics.editorText(incoming[track]),track);
+    const projected=VoxStageLyrics.project(voices);
+    selection={...selection,...VoxStageLyrics.storage(voices),lyricAdjustments:projected.lyricAdjustments,
+      profanityMarks:remapLyricOccurrences(current.profanityMarks,current.lyricLines||[],projected.lyricLines),
+      profanityCues:remapLyricOccurrences(current.profanityCues,current.lyricLines||[],projected.lyricLines)};
+  }
   Object.assign(current, selection); current.lyricAdjustments = {}; current.lyricLines = lines; current.lyricIndex = null; current.vocalSilenceEnds = []; current.vocalSilenceState = null;
+  if(selection.lyricVoices)Object.assign(current,VoxStageLyrics.project(selection.lyricVoices));
+  current.playbackTracks=null;
   updateLyrics(playbackPosition());
   lyricStatus(lines.length ? `Sincronizada: ${match.trackName} — ${match.artistName}` : `Letra sem tempos: ${match.trackName} — ${match.artistName}. Sincronize por linha para usar na apresentação.`);
   closeLyricsDialog();
@@ -2329,7 +2463,7 @@ async function useLyricCandidate(matchOrIndex, context = lyricsDialogContext) {
     try { await api('/api/library', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(song)}); }
     catch (error) { console.error('Não foi possível guardar a letra em library.json', error); }
   }
-  if (!lines.length) openManualLineSync();
+  if (!lines.length && !current.lyricLines?.length) openManualLineSync();
 }
 
 playSong = async function (id) {
@@ -2339,7 +2473,7 @@ playSong = async function (id) {
   updateWordSyncToggle();
   setPlayBusy(true);
   $('nowTitle').textContent = song.title; $('nowArtist').textContent = song.artist || '—'; setMiniStage(song); $('dispTrack').textContent = `${song.title}${song.artist ? ' · ' + song.artist : ''}`;
-  if (mobileNative) setMobileStageArtwork(song);
+  if (mobileStageArtwork) setMobileStageArtwork(song);
   if ($('nowLyric')) { $('nowLyric').textContent = ''; $('nowLyric').hidden = true; }
   const videoBg = $('displayVideoBg');
   if (videoBg) {
@@ -2358,9 +2492,11 @@ playSong = async function (id) {
   current.wordTimings = unifiedLyrics.wordTimings; current.parallelWordTimings = unifiedLyrics.parallelWordTimings;
   current.backingWordTimings = unifiedLyrics.backingWordTimings; current.lyricLineEnds = unifiedLyrics.lyricLineEnds;
   current.backingLineEnds = unifiedLyrics.backingLineEnds; current.parallelLineStarts = unifiedLyrics.parallelLineStarts;
+  current.parallelLineEnds = unifiedLyrics.parallelLineEnds || [];
+  if(unifiedLyrics.lyricAdjustments)current.lyricAdjustments=unifiedLyrics.lyricAdjustments;
   current.lyricLines = unifiedLyrics.lyricLines; current.lyricIndex = null; current.vocalSilenceState = null;
   if (current.lyricLines.length) { lyricStatus(`Sincronizada: ${song.lyricTrack || song.title}`); updateLyrics(0); }
-  else if (String(current.plainLyrics || '').trim()) { lyricStatus('Letra salva sem sincronização. Abra Sync para marcar os tempos.'); $('lyrics').innerHTML = '<span>Letra sem sincronização</span><br><span class="next">Abra Sync para marcar os tempos</span>'; }
+  else if (hasStoredLyricText(current)) { lyricStatus('Letra salva sem sincronização. Abra Sync para marcar os tempos.'); $('lyrics').innerHTML = '<span>Letra sem sincronização</span><br><span class="next">Abra Sync para marcar os tempos</span>'; }
   else { lyricStatus('Ainda sem letra sincronizada.'); $('lyrics').innerHTML = '<span>Buscando a letra</span><br><span class="next">via LRCLIB…</span>'; searchLyrics(true); }
   try {
     toast('Preparando os stems…');
@@ -2396,8 +2532,8 @@ document.head.append(remoteIconStyle);
 const processingSettings = (() => { try { return JSON.parse(localStorage.getItem('voxstage-processing-settings') || '{}'); } catch { return {}; } })();
 processingSettings.mvsepModelId ||= '12';
 processingSettings.mvsepOptionsByModel ||= {};
-processingSettings.localAudioBackend ||= 'cpu';
-processingSettings.execution ||= 'auto';
+delete processingSettings.localAudioBackend;
+delete processingSettings.execution;
 processingSettings.showUpcomingWordPreview ??= false;
 processingSettings.muteProfanity ??= false;
 delete processingSettings.profanityMuteStartOffsetSeconds;
@@ -2407,6 +2543,8 @@ processingSettings.lyricsScaleTv ??= processingSettings.lyricsScale;
 processingSettings.seekStepSeconds ??= 10;
 if (![5, 10, 15, 30].includes(Number(processingSettings.seekStepSeconds))) processingSettings.seekStepSeconds = 10;
 processingSettings.themeCustomColor ||= '#d4fb69';
+if(!/^#[0-9a-f]{6}$/i.test(processingSettings.voice2Color||''))processingSettings.voice2Color='#ff79c8';
+processingSettings.voicesOverlapGradient ??= true;
 processingSettings.useCoverTheme ??= false;
 delete processingSettings.method;
 delete processingSettings.alignmentEngine;
@@ -2416,7 +2554,7 @@ if (![0.5, 1, 1.5, 2, 3].includes(Number(processingSettings.pauseThresholdSecond
 youtubeImport.hidden = false;
 const settingsDialog = document.createElement('div');
 settingsDialog.className = 'processing-dialog'; settingsDialog.id = 'processingDialog';
-settingsDialog.innerHTML = `<section class="processing-card" role="dialog" aria-modal="true" aria-labelledby="processingTitle"><header><div><span class="processing-kicker">VOXSTAGE</span><h2 id="processingTitle">Configurações</h2></div><button class="lyrics-close" id="closeProcessing" aria-label="Fechar">×</button></header><div class="processing-section"><b>Onde executar o alinhamento local de letras</b><p>Vale para sincronizar palavras das letras já existentes. No modo automático, usa a GPU apenas se estiver disponível no ambiente instalado.</p><div class="processing-options"><label><input type="radio" name="execution" value="auto"><span><strong>Automático</strong><small>Usar GPU compatível; senão, CPU</small></span></label><label><input type="radio" name="execution" value="cpu"><span><strong>CPU</strong><small>Mais compatível; pode ser lento</small></span></label><label><input type="radio" name="execution" value="gpu"><span><strong>GPU</strong><small>Requer suporte do PyTorch e driver compatível</small></span></label></div></div><div class="processing-section"><b>Quanto resíduo há no stem vocal?</b><p>O VoxStage usa este perfil para decidir quando o vocal realmente parou. Se a voz estiver sendo cortada cedo, escolha um perfil mais baixo.</p><label class="silence-setting"><select id="silenceThreshold"><option value="-42">Pouco resíduo · preserva vocais baixos</option><option value="-34">Normal</option><option value="-26">Muito resíduo · ignora ruído mais alto</option></select><small id="silenceThresholdValue">Normal</small></label></div><div class="processing-section"><b>Método para preparar os stems</b><p>Importe stems manualmente ou baixe uma faixa do YouTube com yt-dlp e separe-a online pela MVSep.</p><div class="processing-options methods"><label><input type="radio" name="method" value="manual"><span><strong>Arquivos manuais</strong><small>Disponível agora</small></span></label><label class="unavailable"><input type="radio" name="method" value="local" disabled><span><strong>Separação local</strong><small>Em preparação</small></span></label><label><input type="radio" name="method" value="mvsep"><span><strong>API MVSep</strong><small>Busca no YouTube · separação online</small></span></label></div></div><footer><button class="btn" id="saveProcessing">Salvar preferências</button></footer></section>`;
+settingsDialog.innerHTML = `<section class="processing-card" role="dialog" aria-modal="true" aria-labelledby="processingTitle"><header><div><span class="processing-kicker">VOXSTAGE</span><h2 id="processingTitle">Configurações</h2></div><button class="lyrics-close" id="closeProcessing" aria-label="Fechar">×</button></header><div class="processing-section"><b>Quanto resíduo há no stem vocal?</b><p>O VoxStage usa este perfil para decidir quando o vocal realmente parou. Se a voz estiver sendo cortada cedo, escolha um perfil mais baixo.</p><label class="silence-setting"><select id="silenceThreshold"><option value="-42">Pouco resíduo · preserva vocais baixos</option><option value="-34">Normal</option><option value="-26">Muito resíduo · ignora ruído mais alto</option></select><small id="silenceThresholdValue">Normal</small></label></div><div class="processing-section"><b>Método para preparar os stems</b><p>Importe stems manualmente ou baixe uma faixa do YouTube com yt-dlp e separe-a online pela MVSep.</p><div class="processing-options methods"><label><input type="radio" name="method" value="manual"><span><strong>Arquivos manuais</strong><small>Disponível agora</small></span></label><label class="unavailable"><input type="radio" name="method" value="local" disabled><span><strong>Separação local</strong><small>Em preparação</small></span></label><label><input type="radio" name="method" value="mvsep"><span><strong>API MVSep</strong><small>Busca no YouTube · separação online</small></span></label></div></div><footer><button class="btn" id="saveProcessing">Salvar preferências</button></footer></section>`;
 settingsDialog.querySelector('.processing-options.methods').closest('.processing-section').remove();
 const pauseSection = settingsDialog.querySelector('#silenceThreshold').closest('.processing-section');
 pauseSection.querySelector('b').textContent = 'Tempo mínimo de silêncio vocal';
@@ -2433,9 +2571,6 @@ mvsepModelSection.innerHTML = `<b>Modelo de separação MVSep</b><p>Escolha o al
 settingsDialog.querySelector('.processing-card footer').before(mvsepModelSection);
 settingsDialog.querySelector('.processing-card footer').before(mvsepKeySection);
 document.body.append(settingsDialog);
-const localAudioSection = document.createElement('div'); localAudioSection.className = 'processing-section local-audio-section';
-localAudioSection.innerHTML = `<b>Separação de música no computador</b><p>O modo local gera instrumental e uma faixa vocal combinada. Backing vocals separados ainda não são gerados. Na primeira execução, o modelo será baixado para este computador.</p><div class="processing-options local-audio-options"><label><input type="radio" name="localAudioBackend" value="cpu"><span><strong>CPU · recomendado</strong><small>Mais compatível e sem depender da GPU; pode demorar.</small></span></label><label><input type="radio" name="localAudioBackend" value="directml"><span><strong>GPU · DirectML experimental</strong><small>Experimental em AMD/Intel Windows; pode falhar ou consumir a memória de vídeo.</small></span></label></div><small id="localAudioStatus" class="mvsep-key-status" aria-live="polite">Verificando instalação…</small>`;
-settingsDialog.querySelector('.processing-card footer').before(localAudioSection);
 const languageSection = document.createElement('div'); languageSection.className = 'processing-section language-section';
 languageSection.innerHTML = `<b>Idioma da interface</b><p>Escolha o idioma usado nos menus, mensagens e configurações do VoxStage.</p><select id="interfaceLanguage" class="mvsep-model-select" aria-label="Idioma da interface"><option value="pt-BR">Português (Brasil)</option><option value="en-US">English</option></select>`;
 settingsDialog.querySelector('.processing-card footer').before(languageSection);
@@ -2447,8 +2582,15 @@ themeSection.querySelector('#interfaceTheme').onchange = event => setAppTheme(ev
 themeSection.querySelector('#interfaceTheme').insertAdjacentHTML('beforeend', '<option value="custom">Personalizado</option>');
 themeSection.insertAdjacentHTML('beforeend', `<label class="theme-custom-row">Cor RGB <input id="themeCustomColor" type="color" value="${processingSettings.themeCustomColor || '#d4fb69'}" aria-label="Cor personalizada do tema"></label><button class="btn secondary" id="themeFromCover" type="button">Usar cor da capa atual</button><label class="lyrics-scale-row">Escala das letras · vertical <input id="lyricsScale" type="range" min="0.75" max="1.65" step="0.05" value="${processingSettings.lyricsScale || 1}"><output id="lyricsScaleValue">${Math.round((processingSettings.lyricsScale || 1) * 100)}%</output></label><label class="lyrics-scale-row">Escala das letras · TV/horizontal <input id="lyricsScaleTv" type="range" min="0.75" max="1.65" step="0.05" value="${processingSettings.lyricsScaleTv || 1}"><output id="lyricsScaleTvValue">${Math.round((processingSettings.lyricsScaleTv || 1) * 100)}%</output></label>`);
 themeSection.querySelector('#themeCustomColor').oninput = event => { processingSettings.themeCustomColor = event.target.value; setAppTheme('custom'); localStorage.setItem('voxstage-processing-settings', JSON.stringify(processingSettings)); };
-themeSection.querySelector('#lyricsScale').oninput = event => { processingSettings.lyricsScale = Number(event.target.value); document.documentElement.style.setProperty('--lyrics-scale-portrait', event.target.value); themeSection.querySelector('#lyricsScaleValue').textContent = `${Math.round(Number(event.target.value) * 100)}%`; localStorage.setItem('voxstage-processing-settings', JSON.stringify(processingSettings)); };
-themeSection.querySelector('#lyricsScaleTv').oninput = event => { processingSettings.lyricsScaleTv = Number(event.target.value); document.documentElement.style.setProperty('--lyrics-scale-tv', event.target.value); themeSection.querySelector('#lyricsScaleTvValue').textContent = `${Math.round(Number(event.target.value) * 100)}%`; localStorage.setItem('voxstage-processing-settings', JSON.stringify(processingSettings)); };
+themeSection.querySelector('#themeCustomColor').closest('label').insertAdjacentHTML('afterend',`<label class="theme-custom-row">Cor da Voz 2 <input id="voice2Color" type="color" value="${processingSettings.voice2Color}" aria-label="Cor da Voz 2"></label><label class="theme-custom-row"><span>Gradiente quando as vozes cantam juntas</span><input id="voicesOverlapGradient" type="checkbox" ${processingSettings.voicesOverlapGradient?'checked':''}></label><div class="voice-color-preview" aria-label="Prévia das cores das vozes"><span class="preview-voice1">Voz 1</span><span class="preview-voice2">Voz 2</span><span class="preview-voices-together">Juntas</span></div>`);
+for(const setting of ['voice2Color','voicesOverlapGradient'])themeSection.querySelector('#'+setting).addEventListener(setting==='voice2Color'?'input':'change',event=>{
+  processingSettings[setting]=event.target.type==='checkbox'?event.target.checked:event.target.value;
+  localStorage.setItem('voxstage-processing-settings',JSON.stringify(processingSettings));
+  applyVoiceTheme();
+  if(current)updateParallelLyrics(playbackPosition());
+});
+themeSection.querySelector('#lyricsScale').oninput = event => { processingSettings.lyricsScale = Number(event.target.value); document.documentElement.style.setProperty('--lyrics-scale-portrait', event.target.value); $('lyricsScaleValue').textContent = `${Math.round(Number(event.target.value) * 100)}%`; localStorage.setItem('voxstage-processing-settings', JSON.stringify(processingSettings)); };
+themeSection.querySelector('#lyricsScaleTv').oninput = event => { processingSettings.lyricsScaleTv = Number(event.target.value); document.documentElement.style.setProperty('--lyrics-scale-tv', event.target.value); $('lyricsScaleTvValue').textContent = `${Math.round(Number(event.target.value) * 100)}%`; localStorage.setItem('voxstage-processing-settings', JSON.stringify(processingSettings)); };
 themeSection.querySelector('#themeFromCover').onclick = async () => {
   const artwork = current?.cover || current?.background || current?.artwork;
   if (!artwork) { toast('Abra uma música com capa primeiro.'); return; }
@@ -2466,28 +2608,38 @@ themeSection.querySelector('#themeFromCover').onclick = async () => {
 const settingsCard = settingsDialog.querySelector('.processing-card');
 const settingsFooter = settingsCard.querySelector('footer');
 const settingsTabs = document.createElement('nav'); settingsTabs.className = 'settings-tabs'; settingsTabs.setAttribute('role', 'tablist'); settingsTabs.setAttribute('aria-label', 'Seções de configurações');
-settingsTabs.innerHTML = `<button type="button" role="tab" id="settingsTabPlayback" aria-controls="settingsPanePlayback" class="active" data-settings-tab="playback" aria-selected="true">Reprodução</button><button type="button" role="tab" id="settingsTabLocal" aria-controls="settingsPaneLocal" data-settings-tab="local" aria-selected="false">Processamento local</button><button type="button" role="tab" id="settingsTabCloud" aria-controls="settingsPaneCloud" data-settings-tab="cloud" aria-selected="false">Nuvem</button><button type="button" role="tab" id="settingsTabVisual" aria-controls="settingsPaneVisual" data-settings-tab="visual" aria-selected="false">Visual</button>`;
+settingsTabs.innerHTML = `<button type="button" role="tab" id="settingsTabPlayback" aria-controls="settingsPanePlayback" class="active" data-settings-tab="playback" aria-selected="true">Reprodução</button><button type="button" role="tab" id="settingsTabCloud" aria-controls="settingsPaneCloud" data-settings-tab="cloud" aria-selected="false">Nuvem</button><button type="button" role="tab" id="settingsTabVisual" aria-controls="settingsPaneVisual" data-settings-tab="visual" aria-selected="false">Visual</button>`;
+settingsTabs.insertAdjacentHTML('beforeend','<button type="button" role="tab" id="settingsTabData" aria-controls="settingsPaneData" data-settings-tab="data" aria-selected="false">Dados e backup</button>');
 settingsTabs.insertAdjacentHTML('beforeend','<button type="button" role="tab" id="settingsTabAbout" aria-controls="settingsPaneAbout" data-settings-tab="about" aria-selected="false">Sobre</button>');
 settingsTabs.insertAdjacentHTML('beforeend','<button type="button" role="tab" id="settingsTabDebug" aria-controls="settingsPaneDebug" data-settings-tab="debug" aria-selected="false">Debug</button>');
 function isDiagnosticBuild(info) {
   return /-(?:rc|snapshot|test|debug)(?:[.-]|$)/i.test(info?.version||'') || /\b(?:RC|snapshot|debug)\b/i.test(info?.label||'');
 }
-let nativeDebugBuild=false;
-let settingsDebugEnabled=isDiagnosticBuild(window.VoxStageBuildInfo);
+let nativeDebugBuild=window.VoxStageDebugEnabled===true;
+let settingsDebugEnabled=nativeDebugBuild||isDiagnosticBuild(window.VoxStageBuildInfo);
 settingsTabs.querySelector('[data-settings-tab="debug"]').hidden=!settingsDebugEnabled;
-const settingsPaneIds = {playback:'settingsPanePlayback',local:'settingsPaneLocal',cloud:'settingsPaneCloud',visual:'settingsPaneVisual',about:'settingsPaneAbout',debug:'settingsPaneDebug'};
-const settingsPanes = Object.fromEntries(['playback','local','cloud','visual','about','debug'].map(name => { const pane = document.createElement('div'); pane.className = 'settings-pane'; pane.id = settingsPaneIds[name]; pane.setAttribute('role', 'tabpanel'); pane.setAttribute('aria-labelledby', `settingsTab${name[0].toUpperCase()}${name.slice(1)}`); pane.dataset.settingsPane = name; return [name, pane]; }));
+const settingsPaneIds = {playback:'settingsPanePlayback',cloud:'settingsPaneCloud',visual:'settingsPaneVisual',lyrics:'settingsPaneLyrics',data:'settingsPaneData',about:'settingsPaneAbout',debug:'settingsPaneDebug'};
+const settingsPanes = Object.fromEntries(['playback','cloud','visual','data','about','debug'].map(name => { const pane = document.createElement('div'); pane.className = 'settings-pane'; pane.id = settingsPaneIds[name]; pane.setAttribute('role', 'tabpanel'); pane.setAttribute('aria-labelledby', `settingsTab${name[0].toUpperCase()}${name.slice(1)}`); pane.dataset.settingsPane = name; return [name, pane]; }));
 if (mobileNative) {
   document.body.classList.add('mobile-mvsep-ready');
 }
 settingsCard.querySelector('header').insertAdjacentElement('afterend', settingsTabs);
 settingsCard.insertBefore(settingsPanes.playback, settingsFooter);
-settingsCard.insertBefore(settingsPanes.local, settingsFooter);
 settingsCard.insertBefore(settingsPanes.cloud, settingsFooter);
 settingsCard.insertBefore(settingsPanes.visual, settingsFooter);
+settingsCard.insertBefore(settingsPanes.data, settingsFooter);
 settingsCard.insertBefore(settingsPanes.about, settingsFooter);
 settingsCard.insertBefore(settingsPanes.debug, settingsFooter);
-settingsPanes.about.innerHTML=`<section class="about-app"><img src="branding/voxstage-animated.svg" alt="Logo do VoxStage" width="112" height="112"><h3>VoxStage</h3><span id="aboutAppVersion" class="about-version" aria-label="Versão do aplicativo"></span><p>Feito por <a href="https://github.com/kaua0f0m" target="_blank" rel="noopener noreferrer">kaua0f0m</a></p><p>Inspirado no software de <a href="https://www.youtube.com/@funkyblackcat" target="_blank" rel="noopener noreferrer">FunkyBlackCat</a></p><details class="about-credits"><summary>Atribuições e licenças</summary><div><p>Tipografia: Nunito · SIL Open Font License.</p><p>Velocidade e tom: SoundTouchJS · MPL-2.0.</p><p>Downloads: yt-dlp e yt-dlp-android · licenças dos projetos originais.</p><p>Separação opcional: Audio Separator / UVR. Letras: LRCLIB. Separação na nuvem: MVSEP.</p><p>As licenças completas acompanham o pacote em THIRD_PARTY_NOTICES.md e nos arquivos de cada componente.</p></div></details></section>`;
+const debugFormatSection=document.createElement('section');debugFormatSection.className='processing-section';
+debugFormatSection.innerHTML='<b>Formato da interface</b><p>Teste os menus e o palco de cada formato neste aparelho. Salve suas edições antes de aplicar: a interface será recarregada e a reprodução será interrompida.</p><label class="theme-custom-row"><span>Formato</span><select id="debugInterfaceFormat"><option value="auto">Automático (aparelho)</option><option value="pc">PC</option><option value="tv">TV</option><option value="phone">Mobile</option></select></label><button type="button" id="debugApplyInterfaceFormat" class="btn secondary">Aplicar formato</button>';
+settingsPanes.debug.append(debugFormatSection);
+$('debugInterfaceFormat').value=window.VoxStageInterfaceFormat||'auto';
+$('debugApplyInterfaceFormat').onclick=()=>{
+  if(!settingsDebugEnabled)return;
+  const format=$('debugInterfaceFormat').value;if(!['auto','pc','tv','phone'].includes(format))return;
+  try{if(format==='auto')localStorage.removeItem('voxstage-debug-format');else localStorage.setItem('voxstage-debug-format',format);captureUploadDraft();location.reload();}catch{toast('Não consegui guardar o formato de teste.');}
+};
+settingsPanes.about.innerHTML=`<section class="about-app"><img src="branding/voxstage-animated.svg" alt="Logo do VoxStage" width="112" height="112"><h3>VoxStage</h3><span id="aboutAppVersion" class="about-version" aria-label="Versão do aplicativo"></span><p>Feito por <a href="https://github.com/kaua0f0m" target="_blank" rel="noopener noreferrer">kaua0f0m</a></p><p>Inspirado no software de <a href="https://www.youtube.com/@funkyblackcat" target="_blank" rel="noopener noreferrer">FunkyBlackCat</a></p><details class="about-credits"><summary>Atribuições e licenças</summary><div><p>Tipografia: Nunito, Manrope, DM Sans, Outfit e Rubik · SIL Open Font License.</p><p>Velocidade e tom: SoundTouchJS · MPL-2.0.</p><p>Capas: Cover Art Archive · MusicBrainz e Internet Archive; catálogo iTunes; miniaturas do YouTube.</p><p>Downloads: yt-dlp e yt-dlp-android · licenças dos projetos originais.</p><p>Letras: LRCLIB. Separação na nuvem: MVSEP.</p><p>As licenças completas acompanham o pacote em THIRD_PARTY_NOTICES.md e nos arquivos de cada componente.</p></div></details></section>`;
 settingsPanes.about.querySelectorAll('a').forEach(link=>link.onclick=event=>{
   if(mobileNative && window.VoxStageMedia?.openAuthorLink){event.preventDefault();window.VoxStageMedia.openAuthorLink(link.href);}
   else if(window.__TAURI__?.core?.invoke && !mobileNative){
@@ -2504,13 +2656,21 @@ async function refreshAboutVersion() {
     if(typeof info.label==='string'&&info.label.length<100) { $('aboutAppVersion').textContent=info.label; updateDebugAvailability(info); }
   } catch {} // The bundled script also identifies the build while offline.
 }
-const alignSection = settingsDialog.querySelector('input[name="execution"]').closest('.processing-section');
-alignSection.classList.add('local-lyrics-alignment-section');
-alignSection.dataset.settingsPage = 'local'; pauseSection.dataset.settingsPage = 'playback';
-mvsepModelSection.dataset.settingsPage = 'cloud'; mvsepKeySection.dataset.settingsPage = 'cloud'; localAudioSection.dataset.settingsPage = 'local';
+pauseSection.dataset.settingsPage = 'playback';
+mvsepModelSection.dataset.settingsPage = 'cloud'; mvsepKeySection.dataset.settingsPage = 'cloud';
 languageSection.dataset.settingsPage = 'visual'; themeSection.dataset.settingsPage = 'visual';
+const lyricAppearanceSection=document.createElement('section');
+lyricAppearanceSection.className='processing-section lyric-appearance-section';
+lyricAppearanceSection.innerHTML='<b>Letras e vozes</b><p>A cor da Voz 1 acompanha o tema escolhido em Visual. Personalize aqui a Voz 2, a sobreposição das vozes e o tamanho das letras.</p>';
+for(const id of ['voice2Color','voicesOverlapGradient'])lyricAppearanceSection.append($(id).closest('label'));
+lyricAppearanceSection.append(themeSection.querySelector('.voice-color-preview'));
+for(const id of ['lyricsScale','lyricsScaleTv'])lyricAppearanceSection.append($(id).closest('label'));
+lyricAppearanceSection.insertAdjacentHTML('beforeend','<p role="note">Estas preferências valem para todas as músicas. Os textos e os tempos de Voz 1, Voz 2 e Backing são editados individualmente no editor de letras de cada música.</p>');
+settingsPanes.visual.append(lyricAppearanceSection);
+const lyricAppearanceStyle=document.createElement('style');
+lyricAppearanceStyle.textContent='.lyric-appearance-section{min-width:0}.lyric-appearance-section .lyrics-scale-row,.lyric-appearance-section .theme-custom-row{flex-wrap:wrap}.lyric-appearance-section .lyrics-scale-row input{min-width:0;flex:1 1 90px}.lyric-appearance-section input[type=color]{flex:0 0 50px}';
+document.head.append(lyricAppearanceStyle);
 settingsCard.querySelectorAll(':scope > .processing-section').forEach(section => settingsPanes[section.dataset.settingsPage || 'local'].append(section));
-if (mobileNative) settingsTabs.querySelector('[data-settings-tab="local"]').hidden = true;
 const wordPreviewSection = document.createElement('section'); wordPreviewSection.className = 'processing-section word-preview-section';
 wordPreviewSection.innerHTML = `<b>Prévia da próxima palavra</b><label class="experimental-feature-row"><span><strong>Mostrar próxima palavra</strong></span><input type="checkbox" id="showUpcomingWordPreview" aria-label="Mostrar próxima palavra durante a reprodução"><i aria-hidden="true"><i></i></i></label>`;
 settingsPanes.playback.append(wordPreviewSection);
@@ -2540,7 +2700,8 @@ wordPreviewToggle.onchange = () => {
 };
 let activeSettingsTab = 'playback';
 function selectSettingsTab(name) {
-  activeSettingsTab = settingsPanes[name] && !(mobileNative && name === 'local') && !(name==='debug'&&!settingsDebugEnabled) ? name : 'playback';
+  if(name==='lyrics')name='visual'; // Existing links lead to the combined appearance page.
+  activeSettingsTab = settingsPanes[name] && !(name==='debug'&&!settingsDebugEnabled) ? name : 'playback';
   settingsTabs.querySelectorAll('[data-settings-tab]').forEach(button => {
     const active = button.dataset.settingsTab === activeSettingsTab;
     button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active));
@@ -2555,20 +2716,10 @@ function updateDebugAvailability(info=window.VoxStageBuildInfo) {
   settingsTabs.querySelector('[data-settings-tab="debug"]').hidden=!settingsDebugEnabled;
   if(!settingsDebugEnabled&&activeSettingsTab==='debug')selectSettingsTab('playback');
 }
-if(window.__TAURI__?.core?.invoke) {
+if(window.VoxStageDebugEnabled===undefined&&window.__TAURI__?.core?.invoke) {
   const debugMode = mobileNative ? window.__TAURI__.core.invoke('is_debug_build') : api('/api/build-mode').then(result=>result.debug===true);
   void debugMode.then(value=>{nativeDebugBuild=value===true;updateDebugAvailability();}).catch(()=>{});
 }
-async function updateLocalAudioStatus() {
-  if (mobileNative) return;
-  const backend = settingsDialog.querySelector('input[name="localAudioBackend"]:checked')?.value || processingSettings.localAudioBackend || 'cpu';
-  const status = $('localAudioStatus'); status.textContent = 'Verificando o mecanismo local…';
-  try {
-    const result = await api(`/api/local-audio/status?backend=${encodeURIComponent(backend)}`);
-    status.textContent = result.installed ? `${backend === 'cpu' ? 'CPU' : 'DirectML'} pronto neste computador.` : `Não instalado. Abra “Configurar recursos opcionais” para instalar ${backend === 'cpu' ? 'CPU' : 'GPU DirectML'}.`;
-  } catch (error) { status.textContent = `Não consegui verificar a instalação: ${error.message}`; }
-}
-settingsDialog.querySelectorAll('input[name="localAudioBackend"]').forEach(input => input.onchange = updateLocalAudioStatus);
 const settingsStyle = document.createElement('style');
 settingsStyle.textContent = `.processing-dialog{position:fixed;inset:0;z-index:35;display:none;place-items:center;padding:18px;background:#08090bd9;backdrop-filter:blur(12px)}.processing-dialog.show{display:grid}.processing-card{width:min(820px,100%);max-height:90vh;overflow:auto;padding:23px;border-radius:18px;background:linear-gradient(145deg,#202124,#141416);border:1px solid #414148;box-shadow:0 24px 80px #000b}.processing-card header,.processing-card footer{display:flex;align-items:center;justify-content:space-between}.processing-card h2{font:700 22px Manrope;margin:5px 0 0}.processing-kicker{font-size:9px;letter-spacing:1.8px;color:var(--lime);font-weight:700}.processing-section{margin-top:23px}.processing-section>b{font-size:13px}.processing-section p{margin:7px 0 12px;color:#9999a1;font-size:11px;line-height:1.5}.processing-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.processing-options label{display:flex;gap:8px;align-items:flex-start;min-width:0;padding:10px;background:#18181b;border:1px solid #35353b;border-radius:10px;cursor:pointer}.processing-options label:has(input:checked){border-color:#728b3a;background:#22271b}.processing-options input{accent-color:var(--lime);margin:2px 0 0}.processing-options span,.processing-options strong,.processing-options small{display:block}.processing-options strong{font-size:11px}.processing-options small{margin-top:4px;color:#95959c;font-size:9px;line-height:1.4}.processing-options .unavailable{opacity:.48;cursor:not-allowed}.silence-setting{display:flex;align-items:center;gap:14px;padding:12px;background:#18181b;border:1px solid #35353b;border-radius:10px}.silence-setting select{flex:1;min-width:0;background:#222226;color:#eee;border:1px solid #3d3d42;border-radius:8px;padding:9px;font-size:11px;outline:none}.silence-setting select:focus{border-color:var(--lime)}.silence-setting small{color:#95959c;font-size:9px;line-height:1.4}.mvsep-key-row{display:flex;gap:8px}.mvsep-key-row input{flex:1;min-width:0;background:#111113;color:#eee;border:1px solid #3d3d42;border-radius:8px;padding:9px;font-size:11px}.mvsep-key-row button{padding:8px 11px;font-size:10px}.mvsep-key-status{display:block;margin-top:8px;color:#a5c77a;font-size:10px}.processing-card footer{justify-content:flex-end;margin-top:20px}.settings-tabs{display:flex;flex-direction:column;align-items:stretch;gap:4px;width:190px;flex:0 0 190px;padding:6px;margin:18px 18px 0 0;border:0;border-radius:0;background:transparent}.settings-tabs button{padding:10px 12px;border-radius:7px;background:transparent;color:#a7a7ae;font-size:12px;font-weight:650;text-align:left}.settings-tabs button.active{background:#292e1e;color:#d6fb7a;box-shadow:inset 2px 0 #a9d654}.settings-card-body{min-width:0;flex:1}.settings-pane[hidden]{display:none!important}.settings-pane .processing-section:first-child{margin-top:4px}.processing-card>.settings-tabs~.settings-pane:not([hidden]){min-height:240px}.processing-card:has(.settings-tabs){display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto 1fr auto}.processing-card:has(.settings-tabs)>header{grid-column:1/-1}.processing-card:has(.settings-tabs)>.settings-tabs{grid-column:1;grid-row:2/4}.processing-card:has(.settings-tabs)>.settings-pane:not([hidden]){grid-column:2;grid-row:2}.processing-card:has(.settings-tabs)>footer{grid-column:2;grid-row:3}@media(max-width:600px){.processing-card{padding:17px}.processing-card:has(.settings-tabs){grid-template-columns:130px minmax(0,1fr)}.processing-card:has(.settings-tabs)>.settings-tabs{width:130px;flex-basis:130px;margin-right:10px}.settings-tabs button{padding:9px 7px;font-size:10px}.processing-options{grid-template-columns:1fr}.silence-setting{align-items:stretch;flex-direction:column}}`;
 settingsStyle.textContent += `.local-audio-options{grid-template-columns:repeat(2,minmax(0,1fr))}@media(max-width:550px){.local-audio-options{grid-template-columns:1fr}}.experimental-feature-list{display:grid;gap:7px}.experimental-feature-row{position:relative;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:54px;padding:9px 11px;border:1px solid #35353b;border-radius:10px;background:#18181b;cursor:pointer}.experimental-feature-row:has(input:checked){border-color:var(--theme-border,#667a35);background:var(--theme-soft,#22271b)}.experimental-feature-row>span,.experimental-feature-row strong,.experimental-feature-row small{display:block}.experimental-feature-row strong{font-size:11px}.experimental-feature-row small{margin-top:3px;color:#96969e;font-size:9px;line-height:1.4}.experimental-feature-row>input{position:absolute;right:11px;width:1px;height:1px;opacity:0}.experimental-feature-row>i{flex:0 0 36px;width:36px;height:21px;padding:3px;border-radius:20px;background:#414148;transition:background .16s}.experimental-feature-row>i>i{display:block;width:15px;height:15px;border-radius:50%;background:#c4c4c9;transition:transform .16s,background .16s}.experimental-feature-row:has(input:checked)>i{background:var(--lime)}.experimental-feature-row:has(input:checked)>i>i{transform:translateX(15px);background:#171811}.experimental-feature-row:has(input:focus-visible){outline:2px solid var(--lime);outline-offset:2px}[data-experimental-control][hidden]{display:none!important}`;
@@ -2602,14 +2753,162 @@ async function loadMvsepModels(force=false){
   }
 }
 $('mvsepModel').onchange = () => { const previous=String(processingSettings.mvsepModelId||'12');const values={};$('mvsepModelOptions').querySelectorAll('[data-mvsep-option]').forEach(select=>values[select.dataset.mvsepOption]=select.value);processingSettings.mvsepOptionsByModel[previous]=values;processingSettings.mvsepModelId=$('mvsepModel').value;renderMvsepModelOptions(); };
-function openProcessingSettings(){ $('pauseThreshold').value=processingSettings.pauseThresholdSeconds;$('pauseThresholdValue').textContent=$('pauseThreshold').selectedOptions[0].textContent;$('mvsepToken').value='';$('mvsepToken').placeholder=mvsepConfigured?'Chave já salva · digite outra para substituir':'Cole sua chave da API';$('mvsepKeyStatus').textContent=mvsepKeyLocationText(mvsepConfigured);settingsDialog.querySelectorAll('input[name="execution"]').forEach(input=>input.checked=input.value===(processingSettings.execution||'auto'));settingsDialog.querySelectorAll('input[name="localAudioBackend"]').forEach(input=>input.checked=input.value===(processingSettings.localAudioBackend||'cpu'));$('interfaceLanguage').value=interfaceLanguage;$('interfaceTheme').value=interfaceTheme;$('themeCustomColor').value=processingSettings.themeCustomColor||'#d4fb69';$('lyricsScale').value=String(processingSettings.lyricsScale||1);$('lyricsScaleValue').textContent=`${Math.round((processingSettings.lyricsScale||1)*100)}%`;$('lyricsScaleTv').value=String(processingSettings.lyricsScaleTv||1);$('lyricsScaleTvValue').textContent=`${Math.round((processingSettings.lyricsScaleTv||1)*100)}%`;$('seekStepSeconds').value=String(processingSettings.seekStepSeconds||10);document.documentElement.style.setProperty('--lyrics-scale-portrait',String(processingSettings.lyricsScale||1));document.documentElement.style.setProperty('--lyrics-scale-tv',String(processingSettings.lyricsScaleTv||1));selectSettingsTab(activeSettingsTab);settingsDialog.classList.add('show');if(!mobileNative)updateLocalAudioStatus();loadMvsepModels(); }
+function openProcessingSettings(){ $('pauseThreshold').value=processingSettings.pauseThresholdSeconds;$('pauseThresholdValue').textContent=$('pauseThreshold').selectedOptions[0].textContent;$('mvsepToken').value='';$('mvsepToken').placeholder=mvsepConfigured?'Chave já salva · digite outra para substituir':'Cole sua chave da API';$('mvsepKeyStatus').textContent=mvsepKeyLocationText(mvsepConfigured);$('interfaceLanguage').value=interfaceLanguage;$('interfaceTheme').value=interfaceTheme;$('themeCustomColor').value=processingSettings.themeCustomColor||'#d4fb69';$('lyricsScale').value=String(processingSettings.lyricsScale||1);$('lyricsScaleValue').textContent=`${Math.round((processingSettings.lyricsScale||1)*100)}%`;$('lyricsScaleTv').value=String(processingSettings.lyricsScaleTv||1);$('lyricsScaleTvValue').textContent=`${Math.round((processingSettings.lyricsScaleTv||1)*100)}%`;$('seekStepSeconds').value=String(processingSettings.seekStepSeconds||10);document.documentElement.style.setProperty('--lyrics-scale-portrait',String(processingSettings.lyricsScale||1));document.documentElement.style.setProperty('--lyrics-scale-tv',String(processingSettings.lyricsScaleTv||1));selectSettingsTab(activeSettingsTab);settingsDialog.classList.add('show');loadMvsepModels(); }
 $('pauseThreshold').onchange = event => $('pauseThresholdValue').textContent = event.target.selectedOptions[0].textContent;
 $('settingsTop').onclick = openProcessingSettings;
 $('navSettings')?.addEventListener('click', openProcessingSettings);
+const usageGuide=document.createElement('dialog');usageGuide.id='usageGuide';
+usageGuide.setAttribute('aria-labelledby','usageGuideTitle');
+usageGuide.innerHTML=`<header><div><span class="processing-kicker">VOXSTAGE</span><h2 id="usageGuideTitle">Guia de uso</h2></div><button type="button" class="lyrics-close" id="closeUsageGuide" aria-label="Fechar guia">×</button></header><div class="usage-guide-body"><p>Abra um tópico para consultar as instruções. O guia funciona sem internet.</p><div id="usageGuideTopics"></div></div>`;
+document.body.append(usageGuide);
+const usageGuideTopics=[
+  ['queue','Biblioteca e fila de reprodução',`<p>No PC, a fila fica ao lado da biblioteca. No celular e na TV, abra <b>Fila</b> no menu. O botão + adiciona músicas; a busca e os filtros ajudam a encontrar faixas e letras prontas.</p><p>No menu de três pontos da música, escolha <b>Adicionar à fila</b>. Suas escolhas tocam primeiro. Na fila, use a seta para subir uma faixa, × para remover ou Limpar para voltar à ordem normal.</p><p>Sem escolhas pendentes, a reprodução segue as músicas que vêm abaixo da atual na biblioteca, respeitando a ordenação. Buscar ou filtrar não muda a sequência; a última música encerra a sessão.</p>`],
+  ['start','Adicionar e organizar músicas',`<p>Use <b>Adicionar música</b> para importar arquivos ou buscar uma faixa no YouTube. Confira título, artista e o papel de cada arquivo antes de salvar.</p><p>Uma música completa já pode tocar sozinha. Com faixas separadas, marque instrumental, vocal principal e backing para controlar seus volumes. O × remove um arquivo do formulário.</p><p>Use a busca e os favoritos para encontrar músicas. O menu de três pontos permite editar ou apagar uma música e enviar uma faixa completa salva para separação.</p>`],
+  ['separation','Separação de áudio e MVSEP',`<p>Em <b>Configurações → Nuvem</b>, salve sua chave MVSEP e escolha o modelo. A ajuda da chave explica onde obtê-la. A separação pode usar créditos do serviço.</p><p>Ao receber o resultado, confira os arquivos e salve a música. Se eles não forem anexados automaticamente, use <b>Acoplar arquivos</b>.</p>`],
+  ['playback','Tocar, ajustar volumes, velocidade e tom',`<p>Abra a apresentação para cantar. Os controles permitem pausar, avançar e ajustar os volumes das faixas. Em uma música completa há um controle de volume.</p><p><b>Velocidade e tom</b> reúne os ajustes em tempo real: 0,75× a 1,25× e −4 a +4 semitons. As letras e a pontuação acompanham esses ajustes.</p><p>Use o botão de ocultar para liberar a tela. No PC, os controles também se ocultam após inatividade; mantenha o mouse sobre eles para continuarem visíveis.</p>`],
+  ['lyrics','Letras, vozes e aparência',`<p>Em <b>Letras</b>, busque uma versão que corresponda à sua gravação ou cole o texto. Uma letra sem tempos precisa ser sincronizada.</p><p>No editor de Sync, <b>Voz 1</b>, <b>Voz 2</b> e <b>Backing</b> têm textos e tempos independentes. Editar uma voz preserva os tempos das outras. Durante um sync, abra <b>Editar letra</b> para salvar outra voz e depois retomar a marcação em andamento. Hífens dentro de uma palavra separam suas partes: caçado-o-or recebe três marcações. A próxima parte aparece automaticamente durante esse trecho, sem mudar sua preferência de prévia. Para textos antigos, a extração move () para Backing e [] para Voz 2, inclusive dentro de uma frase.</p><p>Na caixa da <b>Voz 2</b>, escreva <b>look through [my eyes]</b> para que apenas my eyes receba o gradiente e o ponto compartilhado. O restante serve como contexto para a mesma frase da Voz 1. Sem colchetes, a Voz 2 participa da frase inteira.</p><p>Frases iguais e simultâneas compartilham uma linha; quando a mesma palavra é cantada pelas duas vozes, ela recebe um único ponto em gradiente. Falas diferentes da Voz 2 aparecem no topo, sem mover a letra principal. Em <b>Configurações → Letras e vozes</b>, ajuste cor da Voz 2, gradiente de sobreposição e tamanho das letras.</p>`],
+  ['sync','Sincronizar por linha ou palavra',`<p>Escolha a voz e o modo no editor de Sync. <b>Por linha:</b> toque quando a frase começar e depois quando ela terminar. Cada frase das três vozes recebe início e fim, inclusive a última.</p><p><b>Palavra por palavra:</b> o primeiro toque marca o início real da primeira palavra. Depois, toque ao terminar cada palavra; esse toque também inicia a seguinte. Nenhuma voz recebe um início em zero automaticamente. A reprodução começa na posição atual: avance até a entrada da voz, se precisar.</p><p><b>Intervalos entre trechos:</b> deixe uma linha vazia entre as frases no texto. Ao terminar a última palavra antes dela, um toque encerra a frase e entra em pausa de marcação. Você pode esperar ou avançar pela barra de progresso. Quando o próximo trecho começar, toque para marcar seu início; depois continue marcando os finais das palavras.</p><p>O áudio continua tocando durante o intervalo; use Pausar/Continuar se precisar. No PC, Espaço também marca. No celular, o mesmo gesto é um toque na letra.</p><p><b>Desfazer</b> volta uma marcação. <b>Salvar</b> aceita trabalho parcial. <b>Cancelar</b> descarta a sessão em andamento e volta à apresentação e à posição anteriores, preservando a letra salva.</p><p>As ferramentas recolhidas do editor permitem corrigir linhas selecionadas, marcar silêncios vocais e selecionar palavras para censura.</p>`],
+  ['covers','Capas e fundos',`<p>A busca de capas usa apenas o título informado. A Apple/iTunes é a busca inicial. Se faltar uma opção, toque em <b>Não encontrou seu resultado? Pesquise no Cover Art</b> para consultar o catálogo comunitário. Ele pode levar mais tempo; os resultados recentes são reaproveitados.</p><p>Para uma imagem de vídeo, escolha <b>Miniatura do YouTube</b> e pesquise a música ou cole o link. A busca usa o YouTube comum. A faixa selecionada na importação também pode fornecer uma capa automaticamente.</p><p>Escolha usar a imagem como capa, fundo ou ambos. A seleção fecha a busca e preenche o formulário; salve a música para guardar a alteração.</p>`],
+  ['scoring','Pontuação e microfone',`<aside class="usage-guide-note"><b>Esta função funciona melhor no PC ou em celulares/TVs onde você pode ouvir o som pelo fone de ouvido.</b><p>O som do alto-falante pode encobrir sua voz ou ser contado como canto pelo microfone. Use fones sempre que possível.</p></aside><p>Abra <b>Pontuar</b>, escolha o microfone e permita o acesso quando solicitado. Você pode usar ambos os vocais ou as três trilhas como referência. Ao começar, a música volta ao início e toca automaticamente.</p><p>Se a seta não reagir, confira o dispositivo e o nível captado. Um filtro de volume mais baixo permite captar vozes fracas, mas também admite mais ruído e vazamento do alto-falante.</p><p>A pontuação soma 1.000 pontos por nota acertada, sem descontar pontos. As cinco estrelas brancas aparecem em 9%, 18%, 27%, 36% e 45% de acerto; ficam douradas em 55%. O histórico fica salvo localmente.</p>`],
+  ['devices','Conectar celular, PC e TV',`<p>Use a opção de conexão para parear o celular com o PC ou a TV seguindo as instruções mostradas. Os aparelhos precisam se alcançar pela rede.</p><p>Músicas já disponíveis entram na fila; arquivos que estão no celular podem ser enviados ao aparelho conectado. Uma faixa nova que exige processamento pode pedir autorização.</p><p>O celular também pode enviar a chave MVSEP e funcionar como microfone do aparelho conectado. Para usar o microfone, permita a captura no celular.</p><p>Em <b>Envios em progresso</b>, acompanhe uma tarefa e volte ao formulário depois. No Android, as notificações ajudam a acompanhar o processamento ao sair do app.</p>`],
+  ['backup','Exportar e importar dados',`<p>Em <b>Configurações → Dados e backup</b>, exporte a biblioteca completa ou escolha um pacote para importar. O arquivo .voxstage.zip inclui áudios, imagens, letras e tempos das três vozes. O backup completo também guarda preferências e histórico de pontuação, sem chaves de API nem pareamentos.</p><p>Para uma única música, abra seu menu de três pontos e escolha <b>Exportar música</b>. Depois de preparar, use <b>Salvar arquivo</b>.</p><p>A importação mostra uma prévia antes de alterar a biblioteca. Por padrão, músicas com o mesmo identificador são mantidas. Marque Atualizar músicas que já existem para substituir seus dados e arquivos pelo conteúdo do pacote. As demais músicas são preservadas.</p><p>Restaurar preferências e histórico é opcional e recarrega a interface ao concluir.</p>`],
+  ['errors','Erros de conexão: 503, busca e YouTube',`<p><b>503 — serviço temporariamente indisponível:</b> o provedor pode estar sobrecarregado, em manutenção ou limitando consultas. Isso não quer dizer que sua música não existe. Aguarde o tempo indicado antes de tentar novamente; insistir pode prolongar a limitação.</p><p><b>Falha de conexão / Failed to fetch:</b> a consulta não chegou ao serviço ou a resposta não voltou. Confira a conexão e tente de novo após uma pausa. Se persistir nas capas, use outro provedor ou uma miniatura do YouTube.</p><p><b>Cover Art Archive lento:</b> esse catálogo depende de consultas adicionais. Ele só busca quando você pede pelo botão; você pode escolher uma capa da Apple enquanto espera.</p><p><b>“Faça login para confirmar que não é um robô”:</b> é um bloqueio do YouTube, que pode variar conforme a rede e o aparelho. Aguarde antes de repetir. Como alternativa, importe o áudio obtido de outra forma e, depois de salvar, use Enviar para o MVSEP no menu da música.</p>`]
+];
+$('usageGuideTopics').innerHTML=usageGuideTopics.map(([id,title,content])=>`<details id="usageGuide-${id}"><summary>${title}</summary><div>${content}</div></details>`).join('');
+const usageGuideButton=document.createElement('button');usageGuideButton.type='button';usageGuideButton.id='openUsageGuide';usageGuideButton.className='usage-guide-open';
+usageGuideButton.textContent='? Guia';usageGuideButton.title='Guia de uso';usageGuideButton.setAttribute('aria-label','Abrir guia de uso');
+const mainMenuActions=document.createElement('div');mainMenuActions.className='main-menu-actions';
+$('settingsTop').before(mainMenuActions);mainMenuActions.append(usageGuideButton,$('settingsTop'));
+let usageGuideOrigin=null;
+function openUsageGuide(topic){
+  usageGuideOrigin=document.activeElement;
+  (document.fullscreenElement||document.body).append(usageGuide);
+  if(!usageGuide.open)usageGuide.showModal();
+  if(topic){const section=$('usageGuide-'+topic);if(section){section.open=true;section.scrollIntoView({block:'start'});section.querySelector('summary').focus();}}
+}
+usageGuideButton.onclick=()=>openUsageGuide();
+$('closeUsageGuide').onclick=()=>usageGuide.close();
+usageGuide.addEventListener('click',event=>{if(event.target===usageGuide){const box=usageGuide.getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)usageGuide.close();}});
+usageGuide.addEventListener('close',()=>{if(usageGuideOrigin?.isConnected)usageGuideOrigin.focus({preventScroll:true});});
+usageGuide.addEventListener('keydown',event=>event.stopPropagation());
+const usageGuideStyle=document.createElement('style');
+usageGuideStyle.textContent=`.main-menu-actions{display:flex;align-items:center;gap:8px;flex:none}.main-menu-actions .settings-top{flex:none}.usage-guide-open{display:flex;align-items:center;justify-content:center;min-height:44px;padding:9px 12px;border:1px solid var(--line,#36363a);border-radius:10px;background:#222226;color:#eee;font-size:12px;font-weight:700;white-space:nowrap}.usage-guide-open:focus-visible,#usageGuide summary:focus-visible{outline:2px solid var(--lime);outline-offset:3px}#usageGuide{width:min(760px,calc(100% - 28px));max-height:calc(100dvh - 28px);padding:0;overflow:hidden;border:1px solid #414148;border-radius:18px;background:#1b1c21;color:var(--text,#f4f4f5);box-shadow:0 24px 80px #000b}#usageGuide[open]{display:flex;flex-direction:column}#usageGuide::backdrop{background:#08090bd9;backdrop-filter:blur(10px)}#usageGuide>header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid #ffffff12;flex:none}#usageGuide h2{margin:5px 0 0;font:700 23px Manrope,sans-serif}.usage-guide-body{padding:4px 24px 24px;overflow:auto;min-height:0;overscroll-behavior:contain}#usageGuide p{font-size:13px;line-height:1.65;color:#babac3;margin:10px 0}#usageGuide details{margin-top:10px;border:1px solid #37383e;border-radius:11px;background:#17181b;scroll-margin-top:12px}#usageGuide summary{padding:15px;cursor:pointer;font-size:14px;font-weight:700;min-height:48px}#usageGuide details>div{padding:0 15px 8px}#usageGuide b{color:#ebebef}#usageGuide .usage-guide-note{padding:12px;border:1px solid var(--theme-border,#65763d);border-radius:9px;background:var(--theme-soft,#262c1d);font-size:13px;line-height:1.6}#usageGuide .usage-guide-note p{margin-bottom:0}@media(max-width:550px){#usageGuide>header{padding:16px}.usage-guide-body{padding:0 16px 16px}#usageGuide h2{font-size:21px}.usage-guide-open{padding:8px 10px;font-size:11px}.main-menu-actions{gap:6px}#usageGuide summary{padding:13px;font-size:13px}}`;
+document.head.append(usageGuideStyle);
+
+
+settingsPanes.data.innerHTML=`<section class="processing-section"><b>Exportar e importar</b><p>Guarde a biblioteca em um arquivo .voxstage.zip com áudios, imagens, letras, sincronização e ajustes. Para uma única faixa, use Exportar música no menu de três pontos.</p><div class="archive-data-actions"><button type="button" class="btn" id="exportLibrary">Exportar biblioteca</button><button type="button" class="btn secondary" id="importLibrary">Importar arquivo</button></div><p>O backup da biblioteca inclui preferências e histórico de pontuação. Chaves de API e conexões com outros aparelhos ficam fora dele.</p></section>`;
+const archiveFileInput=document.createElement('input');archiveFileInput.type='file';archiveFileInput.accept='.zip,.voxstage,application/zip,application/x-zip-compressed';archiveFileInput.id='archiveFileInput';archiveFileInput.hidden=true;document.body.append(archiveFileInput);
+const archiveDialog=document.createElement('dialog');archiveDialog.id='archiveDialog';archiveDialog.setAttribute('aria-labelledby','archiveDialogTitle');
+archiveDialog.innerHTML=`<header><div><span class="processing-kicker">VOXSTAGE</span><h2 id="archiveDialogTitle">Dados e backup</h2></div><button type="button" class="lyrics-close" id="archiveClose" aria-label="Fechar">×</button></header><div class="archive-dialog-body"><p id="archiveStatus" role="status"></p><progress id="archiveProgress" aria-label="Processando arquivo" hidden></progress><section id="archivePreview" hidden><ul id="archiveTitles"></ul><label id="archiveReplaceLabel"><input type="checkbox" id="archiveReplace"> Atualizar músicas que já existem</label><p id="archiveReplaceHint">Desmarcado: mantém as músicas locais com o mesmo identificador. As outras músicas da biblioteca são preservadas.</p><label id="archivePreferencesLabel"><input type="checkbox" id="archivePreferences"> Restaurar preferências e histórico</label><p id="archivePreferencesHint">Ao restaurar preferências, a interface será recarregada ao concluir.</p></section></div><footer><button type="button" class="btn secondary" id="archiveChoose" hidden>Escolher outro arquivo</button><button type="button" class="btn" id="archiveDownload" hidden>Salvar arquivo</button><button type="button" class="btn" id="archiveConfirm" hidden>Importar agora</button></footer>`;
+document.body.append(archiveDialog);
+let archiveBusy=false,archiveExport=null,archivePreview=null,archiveOrigin=null;
+const archivePreferenceKeys=['voxstage-language','voxstage-theme','voxstage-library-view','voxstage-processing-settings','voxstage-score-settings','voxstage-score-history','voxstage-artwork-provider-v2'];
+function formatArchiveSize(bytes){return bytes>=1073741824?(bytes/1073741824).toFixed(1)+' GB':bytes>=1048576?(bytes/1048576).toFixed(1)+' MB':Math.max(1,Math.round(bytes/1024))+' KB';}
+function captureArchivePreferences(){return Object.fromEntries(archivePreferenceKeys.map(key=>[key,localStorage.getItem(key)]).filter(([,value])=>value!==null));}
+function showArchiveDialog(title){
+  archiveOrigin=document.activeElement;
+  (document.fullscreenElement||document.body).append(archiveDialog);
+  $('archiveDialogTitle').textContent=title;
+  if(!archiveDialog.open)archiveDialog.showModal();
+}
+function setArchiveBusy(busy){
+  archiveBusy=busy;$('archiveProgress').hidden=!busy;
+  for(const id of ['exportLibrary','importLibrary','archiveChoose','archiveDownload','archiveConfirm'])$(id).disabled=busy;
+}
+function resetArchiveDialog(){
+  archiveExport=null;archivePreview=null;
+  for(const id of ['archivePreview','archiveChoose','archiveDownload','archiveConfirm'])$(id).hidden=true;
+  $('archiveReplace').checked=false;$('archivePreferences').checked=false;
+}
+async function exportArchive(songId=null){
+  if(archiveBusy){showArchiveDialog($('archiveDialogTitle').textContent);return;}
+  resetArchiveDialog();showArchiveDialog(songId?'Exportar música':'Exportar biblioteca');
+  $('archiveStatus').textContent='Preparando o pacote com os arquivos e dados. Você pode fechar esta tela enquanto espera.';setArchiveBusy(true);
+  try{
+    archiveExport=await api('/api/archives/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({songId,preferences:songId?{}:captureArchivePreferences()})});
+    $('archiveStatus').textContent=`Pacote pronto: ${archiveExport.songs} música(s), ${archiveExport.files} arquivo(s) · ${formatArchiveSize(archiveExport.bytes)}. Salve o arquivo para guardar seu backup.`;
+    $('archiveDownload').hidden=false;
+    if(!archiveDialog.open)toast('Exportação pronta. Abra Dados e backup para salvar o arquivo.');
+  }catch(error){$('archiveStatus').textContent=error.message;toast(error.message);}
+  finally{setArchiveBusy(false);}
+}
+async function saveArchiveExport(){
+  if(!archiveExport||archiveBusy)return;
+  if(!mobileNative){
+    const link=document.createElement('a');link.href=archiveExport.downloadUrl;link.download=archiveExport.filename;document.body.append(link);link.click();link.remove();
+    $('archiveStatus').textContent='Download iniciado: '+archiveExport.filename+'. Guarde o arquivo para importar depois.';return;
+  }
+  setArchiveBusy(true);
+  try{
+    const {token}=await api('/api/archives/save',{method:'POST',body:JSON.stringify(archiveExport)});
+    $('archiveStatus').textContent='Escolha onde salvar o arquivo no Android.';
+    while(true){
+      const result=await api('/api/archives/save-status',{method:'POST',body:JSON.stringify({token})});
+      if(result.state==='done'){$('archiveStatus').textContent='Arquivo salvo: '+archiveExport.filename;break;}
+      if(result.state==='cancelled'){$('archiveStatus').textContent='Salvamento cancelado. Você pode tentar salvar o pacote novamente.';break;}
+      $('archiveStatus').textContent=result.state==='saving'?'Salvando o pacote no destino escolhido…':'Escolha onde salvar o arquivo no Android.';
+      await new Promise(resolve=>setTimeout(resolve,1000));
+    }
+  }catch(error){$('archiveStatus').textContent=error.message;}
+  finally{setArchiveBusy(false);}
+}
+function chooseArchiveFile(){if(archiveBusy)return;archiveFileInput.value='';archiveFileInput.click();}
+async function inspectArchiveFile(file){
+  if(!file||archiveBusy)return;
+  resetArchiveDialog();showArchiveDialog('Importar músicas');setArchiveBusy(true);
+  $('archiveChoose').hidden=false;$('archiveStatus').textContent='Conferindo '+file.name+'… A biblioteca só muda após você confirmar a importação.';
+  try{
+    archivePreview=await api('/api/archives/inspect',{method:'POST',headers:{'Content-Type':'application/zip'},body:file});
+    $('archiveStatus').textContent=`${archivePreview.songs} música(s): ${archivePreview.new} nova(s), ${archivePreview.existing} já existente(s). ${formatArchiveSize(archivePreview.bytes)} em arquivos.`;
+    $('archiveTitles').replaceChildren(...archivePreview.titles.map(title=>{const item=document.createElement('li');item.textContent=title;return item;}));
+    $('archivePreview').hidden=false;$('archiveConfirm').hidden=false;
+    $('archiveReplaceLabel').hidden=$('archiveReplaceHint').hidden=!archivePreview.existing;
+    $('archivePreferencesLabel').hidden=$('archivePreferencesHint').hidden=!archivePreview.preferences;
+  }catch(error){$('archiveStatus').textContent=error.message;}
+  finally{setArchiveBusy(false);}
+}
+async function importArchive(){
+  if(!archivePreview||archiveBusy)return;
+  const restorePreferences=$('archivePreferences').checked;
+  setArchiveBusy(true);$('archiveStatus').textContent='Importando arquivos e conferindo sua integridade…';
+  try{
+    const result=await api('/api/archives/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:archivePreview.id,replaceExisting:$('archiveReplace').checked})});
+    if(current&&result.ids.includes(current.id)){stopSong();$('display').classList.remove('show');}
+    await loadSongs();
+    $('archiveStatus').textContent=`Importação concluída: ${result.added} nova(s), ${result.updated} atualizada(s), ${result.skipped} mantida(s) sem alteração.`;
+    $('archiveConfirm').hidden=true;$('archivePreview').hidden=true;archivePreview=null;
+    if(restorePreferences&&Object.keys(result.preferences||{}).length){
+      captureUploadDraft();
+      const keys=archivePreferenceKeys.filter(key=>typeof result.preferences[key]==='string');
+      const previous=new Map(keys.map(key=>[key,localStorage.getItem(key)]));
+      try{
+        for(const key of keys)localStorage.setItem(key,result.preferences[key]);
+      }catch(error){
+        for(const [key,value] of previous)try{if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value);}catch{}
+        $('archiveStatus').textContent+=' As músicas foram importadas, mas não houve espaço para restaurar as preferências.';
+        return;
+      }
+      window.location.reload();
+    }
+  }catch(error){$('archiveStatus').textContent=error.message;}
+  finally{setArchiveBusy(false);}
+}
+$('exportLibrary').onclick=()=>exportArchive();$('importLibrary').onclick=chooseArchiveFile;
+$('archiveClose').onclick=()=>archiveDialog.close();$('archiveDownload').onclick=saveArchiveExport;$('archiveConfirm').onclick=importArchive;$('archiveChoose').onclick=chooseArchiveFile;
+archiveFileInput.onchange=()=>inspectArchiveFile(archiveFileInput.files[0]);
+archiveDialog.addEventListener('keydown',event=>event.stopPropagation());
+archiveDialog.addEventListener('close',()=>{if(archiveOrigin?.isConnected)archiveOrigin.focus({preventScroll:true});});
+// Reopening this settings tab also recovers a prepared export after its dialog closes.
+settingsPanes.data.insertAdjacentHTML('beforeend','<button type="button" class="btn secondary" id="archiveResume" hidden>Ver exportação em andamento</button>');
+$('archiveResume').onclick=()=>showArchiveDialog($('archiveDialogTitle').textContent);
+const archiveVisibility=new MutationObserver(()=>{$('archiveResume').hidden=!archiveBusy&&!archiveExport&&!archivePreview;$('archiveResume').textContent=archiveBusy?'Ver operação em andamento':archiveExport?'Salvar exportação preparada':'Continuar importação';});
+archiveVisibility.observe($('archiveProgress'),{attributes:true,attributeFilter:['hidden']});
+const archiveStyle=document.createElement('style');archiveStyle.textContent=`.archive-data-actions{display:flex;flex-wrap:wrap;gap:9px}.archive-data-actions button{justify-content:center;font-size:12px}#archiveResume{margin-top:12px;font-size:12px}#archiveDialog{width:min(600px,calc(100% - 28px));max-height:calc(100dvh - 28px);padding:0;overflow:hidden;border:1px solid #414148;border-radius:18px;background:#1b1c21;color:var(--text,#f4f4f5)}#archiveDialog[open]{display:flex;flex-direction:column}#archiveDialog::backdrop{background:#08090bd9;backdrop-filter:blur(10px)}#archiveDialog header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px;border-bottom:1px solid #ffffff12}#archiveDialog h2{font:700 21px Manrope,sans-serif;margin:5px 0 0}.archive-dialog-body{padding:4px 20px 20px;overflow:auto;min-height:0}#archiveDialog p{font-size:13px;line-height:1.6;color:#bcbcc5}#archiveDialog progress{width:100%;accent-color:var(--lime)}#archiveDialog ul{padding-left:20px;font-size:13px;line-height:1.6}#archiveDialog label{display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-top:12px}#archiveDialog input{accent-color:var(--lime);flex:none}#archiveDialog #archiveReplaceHint,#archiveDialog #archivePreferencesHint{font-size:11px;margin-top:6px}#archiveDialog footer{padding:14px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #ffffff12}#archiveDialog footer button{font-size:12px}#archiveDialog [hidden],#archiveResume[hidden]{display:none!important}@media(max-width:550px){.archive-data-actions{flex-direction:column}#archiveDialog header{padding:16px}.archive-dialog-body{padding:0 16px 16px}#archiveDialog footer{padding:12px 16px;flex-wrap:wrap}#archiveDialog footer button{flex:1;justify-content:center}}`;document.head.append(archiveStyle);
+
 $('closeProcessing').onclick = () => settingsDialog.classList.remove('show');
 settingsDialog.addEventListener('click', event => { if (event.target === settingsDialog) settingsDialog.classList.remove('show'); });
 $('removeMvsepToken').onclick = async () => { try { await api('/api/mvsep/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:''})});mvsepConfigured=false;$('mvsepToken').value='';$('mvsepKeyStatus').textContent=interfaceLanguage==='en-US'?'Key removed from this device.':'Chave removida deste aparelho.';loadMvsepConfiguration(); } catch(error){$('mvsepKeyStatus').textContent=error.message;} };
-$('saveProcessing').onclick = async () => { processingSettings.execution=settingsDialog.querySelector('input[name="execution"]:checked')?.value||'auto';processingSettings.localAudioBackend=settingsDialog.querySelector('input[name="localAudioBackend"]:checked')?.value||'cpu';processingSettings.mvsepModelId=$('mvsepModel').value||'12';const model=availableMvsepModels.find(item=>String(item.id)===String(processingSettings.mvsepModelId));if(model){const values={};$('mvsepModelOptions').querySelectorAll('[data-mvsep-option]').forEach(select=>values[select.dataset.mvsepOption]=select.value);processingSettings.mvsepOptionsByModel[processingSettings.mvsepModelId]=values;}processingSettings.pauseThresholdSeconds=Number($('pauseThreshold').value);const token=$('mvsepToken').value.trim();if(token){try{await api('/api/mvsep/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});mvsepConfigured=true;}catch(error){$('mvsepKeyStatus').textContent=error.message;selectSettingsTab('cloud');return;}}localStorage.setItem('voxstage-processing-settings',JSON.stringify(processingSettings));if(current){current.vocalSilenceEnds=[];current.vocalSilenceState=null;updateLyrics(playbackPosition());}settingsDialog.classList.remove('show');await loadMvsepConfiguration();toast('Preferências salvas neste aparelho.'); };
+$('saveProcessing').onclick = async () => { processingSettings.mvsepModelId=$('mvsepModel').value||'12';const model=availableMvsepModels.find(item=>String(item.id)===String(processingSettings.mvsepModelId));if(model){const values={};$('mvsepModelOptions').querySelectorAll('[data-mvsep-option]').forEach(select=>values[select.dataset.mvsepOption]=select.value);processingSettings.mvsepOptionsByModel[processingSettings.mvsepModelId]=values;}processingSettings.pauseThresholdSeconds=Number($('pauseThreshold').value);const token=$('mvsepToken').value.trim();if(token){try{await api('/api/mvsep/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});mvsepConfigured=true;}catch(error){$('mvsepKeyStatus').textContent=error.message;selectSettingsTab('cloud');return;}}localStorage.setItem('voxstage-processing-settings',JSON.stringify(processingSettings));if(current){current.vocalSilenceEnds=[];current.vocalSilenceState=null;updateLyrics(playbackPosition());}settingsDialog.classList.remove('show');await loadMvsepConfiguration();toast('Preferências salvas neste aparelho.'); };
 const favoriteButton = document.createElement('button'); favoriteButton.className = 'filter-btn'; favoriteButton.id = 'filterFavorites'; favoriteButton.textContent = '☆ Favoritas';
 $('search').insertAdjacentElement('afterend', favoriteButton);
 favoriteButton.onclick = () => { favoriteOnly = !favoriteOnly; favoriteButton.classList.toggle('selected', favoriteOnly); favoriteButton.textContent = favoriteOnly ? '★ Favoritas' : '☆ Favoritas'; render(); };
@@ -2648,7 +2947,8 @@ fullscreenVolumes.innerHTML = [['Inst', 'Instrumental'], ['Lead', 'Vocal'], ['Ba
 const lyricsDialog = document.createElement('div'); lyricsDialog.id = 'lyricsDialog'; lyricsDialog.className = 'lyrics-dialog';
 lyricsDialog.innerHTML = `<div class="lyrics-dialog-card"><div class="lyrics-dialog-head"><div><span class="lyrics-kicker">VOXSTAGE · LETRAS</span><h2 id="lyricsDialogTitle">Letras sincronizadas</h2></div><button class="lyrics-close" id="closeLyricsDialog" aria-label="Fechar">×</button></div><p class="lyrics-dialog-copy">Busque uma versão sincronizada e escolha o resultado que corresponde à gravação.</p><div class="lyrics-search-row"><input id="lyricsQuery" placeholder="Título da música ou artista"><button class="btn" id="searchLyricsButton">Buscar</button></div><section class="lyrics-paste"><label for="lyricsPasteInput">Ou cole sua própria letra</label><textarea id="lyricsPasteInput" rows="5" placeholder="Cole a letra aqui, uma linha por frase. Você pode colar timestamps LRC também."></textarea><button class="btn secondary" id="applyPastedLyrics" type="button">Usar esta letra</button></section><div id="lyricsResults" class="lyrics-results"><div class="lyrics-empty">Pesquise pelo nome da música para encontrar letras.</div></div><div id="lyricsDialogStatus" class="lyrics-dialog-status"></div></div>`;
 const profanityPicker = document.createElement('div'); profanityPicker.className = 'profanity-picker-dialog'; profanityPicker.id = 'profanityPicker';
-profanityPicker.innerHTML = `<section class="profanity-picker-card" role="dialog" aria-modal="true" aria-labelledby="profanityPickerTitle"><header><div><span class="lyrics-kicker">CENSURA</span><h2 id="profanityPickerTitle">Escolha cada ocorrência</h2></div><button class="lyrics-close" id="closeProfanityPicker" aria-label="Fechar">×</button></header><p>Toque apenas nas ocorrências que deseja borrar. Depois, no Sync, marque o início e o fim de cada uma para silenciar os vocais.</p><div id="profanityPickerWords" class="profanity-picker-words"></div><footer><button class="btn" id="saveProfanityWords" type="button">Salvar seleção</button></footer></section>`;
+profanityPicker.innerHTML = `<section class="profanity-picker-card" role="dialog" aria-modal="true" aria-labelledby="profanityPickerTitle"><header><div><span class="lyrics-kicker">CENSURA</span><h2 id="profanityPickerTitle">Escolha cada ocorrência</h2></div><button class="lyrics-close" id="closeProfanityPicker" type="button" aria-label="Fechar">×</button></header><p id="profanityPickerCopy">Escolha as palavras por voz. Depois, no Sync, marque o início e o fim de cada uma para silenciar os vocais.</p><div id="profanityVoiceTabs" class="profanity-voice-tabs" role="tablist" aria-label="Voz da letra"></div><div id="profanityPickerWords" class="profanity-picker-words"></div><footer><span id="profanitySelectionCount" role="status" aria-live="polite"></span><button class="btn" id="saveProfanityWords" type="button">Salvar seleção</button></footer></section>`;
+let profanityPickerVoice='lead',profanityPickerSongId=null,profanityPickerReturnFocus=null,profanityPickerBusy=false;
 document.body.append(profanityPicker);
 document.body.append(lyricsDialog);
 const manualSyncStyle = document.createElement('style');
@@ -2658,6 +2958,8 @@ manualSyncStyle.textContent += `.sync-focus-row{display:flex;align-items:center;
 const manualSyncHopStyle = document.createElement('style');
 manualSyncHopStyle.textContent = `.manual-sync-phrase .lyric-word.active:before{animation:manualSyncWordHop .46s cubic-bezier(.2,.75,.25,1)}@keyframes manualSyncWordHop{0%{opacity:.65;transform:translate(-50%,.16em) scale(.75)}32%{opacity:1;transform:translate(-50%,-.9em) scale(1.2)}62%{transform:translate(-50%,-.1em) scale(.94)}82%{transform:translate(-50%,-.35em) scale(1.06)}100%{opacity:1;transform:translate(-50%,0) scale(1)}}`;
 document.head.append(manualSyncHopStyle);
+manualSyncStyle.textContent += `.voice-editors{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}.voice-editors[hidden]{display:none!important}.voice-editor{display:flex;flex-direction:column;gap:5px;min-width:0;padding:9px;border:1px solid #35363b;border-radius:10px;background:#16171a}.voice-editor.selected{border-color:#b4d75b}.voice-editor b{font-size:12px;color:#d6ed99}.voice-editor[data-voice-editor=parallel] b{color:#b9cfff}.voice-editor[data-voice-editor=backing] b{color:#d8baff}.voice-editor small{color:#a9aab0;font-size:10px;min-height:26px}.voice-editor textarea{box-sizing:border-box;flex:1;min-width:0;min-height:140px}.assignment{grid-template-columns:20px minmax(0,1fr) auto 32px!important}.assignment-remove{width:32px;height:32px;border-radius:7px;background:#2c2326;color:#f2b0b4;border:1px solid #694049;cursor:pointer;font-size:20px;line-height:1}.assignment-remove:hover{background:#573039}.assignment-remove:focus-visible{outline:2px solid #e7ed9b;outline-offset:2px}.lyric-second-line{display:block;margin:.4em auto;font-size:.8em;color:#b9cfff;line-height:1.4}.lyric-voice-label{display:block;font:700 10px/1.5 'DM Sans',sans-serif;letter-spacing:.1em;opacity:.7;text-transform:uppercase}.lyric-second-line .active{color:var(--lyric-accent,var(--lime));text-shadow:0 0 14px currentColor}.lyric-current-line[hidden]{display:none!important}@media(max-width:590px){.voice-editors{grid-template-columns:1fr}.voice-editor textarea{min-height:100px}.voice-editor small{min-height:0}.assignment{gap:6px!important}.assignment select{max-width:138px}.lyric-second-line{font-size:.85em}}`;
+manualSyncStyle.textContent += '.voice-extract{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:8px}.voice-extract small{font-size:10px;color:#aaa;flex:1;min-width:180px}.voice-extract button{font-size:10px;padding:8px}.lyric-second-line[hidden]{display:none!important}';
 document.head.append(manualSyncStyle);
 const manualSilenceStyle = document.createElement('style');
 manualSilenceStyle.textContent = `.manual-silence-tracker{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 0;padding:9px 10px;border:1px solid #3c3d42;border-radius:9px;background:#111214}.manual-silence-tracker>div:first-child{display:grid;gap:3px;min-width:0}.manual-silence-tracker strong{font-size:10px;color:#eee}.manual-silence-tracker small{font-size:9px;color:#aeb0b5}.manual-silence-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.manual-silence-actions button{min-height:32px!important;padding:6px 8px!important;font-size:9px!important}.profanity-offset-settings{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px;padding:10px;border:1px solid #34363a;border-radius:10px;background:#111214}.profanity-offset-settings>b,.profanity-offset-settings>p{grid-column:1/-1;margin:0}.profanity-offset-settings>b{font-size:11px}.profanity-offset-settings>p{color:#aeb0b5;font-size:10px}.profanity-offset-settings>label{display:grid;gap:5px;padding:8px;border-radius:8px;background:#1a1b1f;font-size:10px}.profanity-offset-settings>label span{display:flex;align-items:center;gap:4px;font-weight:700}.profanity-offset-settings input{width:86px;padding:5px;border:1px solid #45474c;border-radius:6px;background:#101114;color:#eee;font:inherit}.profanity-offset-settings>label small{color:#aeb0b5;font-size:9px}.sync-silence-mode[aria-pressed="true"]{border-color:#c8ef69!important;color:#d8ff78!important;background:#282e1e!important}.manual-sync-select-all{grid-column:1/-1;justify-self:start;padding:6px 9px;border:1px solid #4a4d3e;border-radius:7px;background:#25291e;color:#d8f791;font:650 10px 'DM Sans',sans-serif;cursor:pointer}.lyric-pause-clock{margin-left:.3em;padding:.08em .38em;border-radius:999px;background:#111a;color:currentColor;font:700 .48em/1.3 'DM Sans',sans-serif;font-variant-numeric:tabular-nums}.lyric-pause-clock[hidden]{display:none!important}@media(max-width:590px){.manual-silence-tracker{align-items:flex-start;flex-direction:column}.manual-silence-actions{justify-content:flex-start}.manual-silence-actions button{flex:1}.profanity-offset-settings{grid-template-columns:1fr}}`;
@@ -2675,32 +2977,161 @@ $('searchLyricsButton').onclick = () => searchLyrics(false);
 $('applyPastedLyrics').onclick = applyPastedLyrics;
 $('lyricsQuery').onkeydown = event => { if (event.key === 'Enter') searchLyrics(false); };
 lyricsDialog.onclick = event => { if (event.target === lyricsDialog) closeLyricsDialog(); };
-function openProfanityPickerForCurrent() {
-  if (!current) return;
-  const fullscreenLayer = document.fullscreenElement || (display?.classList.contains('show') ? display : null);
-  (fullscreenLayer || document.body).append(profanityPicker);
-  const lines = current.lyricLines?.length ? current.lyricLines : String(current.plainLyrics||'').split(/\r?\n/).filter(Boolean).map(text=>({text}));
-  $('profanityPickerWords').innerHTML = lines.map((line,lineIndex) => `<div>${lyricWordEntries(line.text).map((entry,wordIndex) => `<button type="button" class="profanity-pick-word${isProfanityOccurrence(lineIndex,wordIndex,entry.word)?' selected':''}" data-line-index="${lineIndex}" data-word-index="${wordIndex}" data-word="${esc(entry.word)}">${esc(entry.word)}</button>`).join(' ')}</div>`).join('');
-  $('profanityPickerWords').querySelectorAll('.profanity-pick-word').forEach(button => button.onclick = () => button.classList.toggle('selected'));
-  profanityPicker.classList.add('show');
+function selectProfanityVoice(voice,focus=false) {
+  profanityPickerVoice=voice;
+  for(const tab of $('profanityVoiceTabs').querySelectorAll('[data-censor-voice]')){
+    const selected=tab.dataset.censorVoice===voice;
+    tab.classList.toggle('selected',selected);tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;
+    $(tab.getAttribute('aria-controls')).hidden=!selected;
+    if(selected&&focus)tab.focus({preventScroll:true});
+  }
 }
-$('closeProfanityPicker').onclick = () => profanityPicker.classList.remove('show');
-$('saveProfanityWords').onclick = async () => {
-  const marks = [...$('profanityPickerWords').querySelectorAll('.profanity-pick-word.selected')].map(button=>({lineIndex:Number(button.dataset.lineIndex),wordIndex:Number(button.dataset.wordIndex),word:button.dataset.word}));
-  current.profanityMarks = marks;
-  current.profanityCues = (current.profanityCues||[]).filter(cue=>marks.some(mark=>mark.lineIndex===Number(cue.lineIndex)&&mark.wordIndex===Number(cue.wordIndex)&&lyricTokenKey(mark.word)===lyricTokenKey(cue.word)));
-  current.playbackTracks = null;
-  const song = songs.find(item => item.id === current.id);
-  if (song) { song.profanityMarks = marks; song.profanityCues = current.profanityCues; try { await api('/api/library', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(song)}); } catch { toast('Palavras aplicadas, mas não consegui salvar.'); } }
-  current.lyricIndex = null; updateLyrics(playbackPosition()); profanityPicker.classList.remove('show');
-  toast(`${marks.length} ocorrência${marks.length === 1 ? '' : 's'} marcada${marks.length === 1 ? '' : 's'}.`);
+function updateProfanitySelectionCount(){
+  const selected=$('profanityPickerWords').querySelectorAll('.profanity-pick-word.selected');
+  $('profanitySelectionCount').textContent=interfaceLanguage==='en-US'?`${selected.length} selected`:`${selected.length} selecionada${selected.length===1?'':'s'}`;
+  for(const tab of $('profanityVoiceTabs').querySelectorAll('[data-censor-voice]')){
+    const count=$(tab.getAttribute('aria-controls')).querySelectorAll('.selected').length;
+    const badge=tab.querySelector('small');badge.textContent=count;badge.hidden=!count;
+  }
+}
+function closeProfanityPicker(){
+  if(profanityPickerBusy)return;
+  profanityPicker.classList.remove('show');
+  if(profanityPickerReturnFocus?.isConnected)profanityPickerReturnFocus.focus({preventScroll:true});
+}
+function openProfanityPickerForCurrent() {
+  if(!current||profanityPickerBusy)return;
+  profanityPickerReturnFocus=document.activeElement;profanityPickerSongId=current.id;
+  const fullscreenLayer=document.fullscreenElement||(display?.classList.contains('show')?display:null);
+  (fullscreenLayer||document.body).append(profanityPicker);
+  const lines=current.lyricLines?.length?current.lyricLines:String(current.plainLyrics||'').split(/\r?\n/).filter(Boolean).map(text=>({text}));
+  const groups={lead:[],parallel:[],backing:[]};
+  lines.forEach((line,lineIndex)=>{
+    const entries=lyricWordEntries(line.text),track=line.voice||line.source;
+    for(const voice of VoxStageLyrics.tracks){
+      const selected=entries.flatMap((entry,wordIndex)=>{
+        const source=track==='parallel'?'parallel':track==='backing'||isBackingLyric(line.text)?'backing':entry.parallel?'parallel':'lead';
+        if(source!==voice||source==='parallel'&&line.activeWordIndices&&!line.activeWordIndices.includes(wordIndex))return [];
+        return [{...entry,wordIndex}];
+      });
+      if(!selected.length)continue;
+      const markup=selected.map((entry,index)=>(index?esc(entry.joiner||' '):'')+`<button type="button" class="profanity-pick-word${isProfanityOccurrence(lineIndex,entry.wordIndex,entry.word)?' selected':''}" aria-pressed="${isProfanityOccurrence(lineIndex,entry.wordIndex,entry.word)}" data-line-index="${lineIndex}" data-word-index="${entry.wordIndex}" data-word="${esc(entry.word)}">${esc(entry.word)}</button>`).join('');
+      groups[voice].push(`<div class="profanity-phrase" data-line-index="${lineIndex}">${markup}</div>`);
+    }
+  });
+  const labels={lead:interfaceLanguage==='en-US'?'Voice 1':'Voz 1',parallel:interfaceLanguage==='en-US'?'Voice 2':'Voz 2',backing:'Backing'};
+  $('profanityPickerTitle').textContent=interfaceLanguage==='en-US'?'Choose each occurrence':'Escolha cada ocorrência';
+  $('profanityPickerCopy').textContent=interfaceLanguage==='en-US'?'Choose words by voice. Then use Sync to mark each start and end for muting.':'Escolha as palavras por voz. Depois, no Sync, marque o início e o fim de cada uma para silenciar os vocais.';
+  $('saveProfanityWords').textContent=interfaceLanguage==='en-US'?'Save selection':'Salvar seleção';
+  $('profanityVoiceTabs').innerHTML=VoxStageLyrics.tracks.map(voice=>`<button type="button" id="censorTab-${voice}" role="tab" data-censor-voice="${voice}" aria-controls="censorWords-${voice}" aria-selected="false" tabindex="-1"><span>${labels[voice]}</span><small hidden></small></button>`).join('');
+  $('profanityPickerWords').innerHTML=VoxStageLyrics.tracks.map(voice=>`<section id="censorWords-${voice}" role="tabpanel" aria-labelledby="censorTab-${voice}" hidden>${groups[voice].join('')||`<p class="profanity-empty">${interfaceLanguage==='en-US'?'No lines from this voice in these lyrics.':'Nenhuma linha desta voz nesta letra.'}</p>`}</section>`).join('');
+  profanityPicker.classList.add('show');
+  const preferred=manualSyncDialog.classList.contains('show')?manualSyncFocus:profanityPickerVoice;
+  selectProfanityVoice(groups[preferred]?.length?preferred:VoxStageLyrics.tracks.find(voice=>groups[voice].length)||'lead',true);
+  updateProfanitySelectionCount();$('profanityPickerWords').scrollTop=0;
+}
+$('profanityVoiceTabs').addEventListener('click',event=>{const tab=event.target.closest('[data-censor-voice]');if(tab&&!profanityPickerBusy){selectProfanityVoice(tab.dataset.censorVoice);$('profanityPickerWords').scrollTop=0;}});
+$('profanityPickerWords').addEventListener('click',event=>{
+  const button=event.target.closest('.profanity-pick-word');if(!button||profanityPickerBusy)return;
+  button.classList.toggle('selected');button.setAttribute('aria-pressed',String(button.classList.contains('selected')));updateProfanitySelectionCount();
+});
+$('closeProfanityPicker').onclick=closeProfanityPicker;
+$('saveProfanityWords').onclick=async()=>{
+  if(profanityPickerBusy||!current||current.id!==profanityPickerSongId){if(!profanityPickerBusy)closeProfanityPicker();return;}
+  const songId=current.id,marks=[...$('profanityPickerWords').querySelectorAll('.profanity-pick-word.selected')].map(button=>({lineIndex:Number(button.dataset.lineIndex),wordIndex:Number(button.dataset.wordIndex),word:button.dataset.word}));
+  const cues=(current.profanityCues||[]).filter(cue=>marks.some(mark=>mark.lineIndex===Number(cue.lineIndex)&&mark.wordIndex===Number(cue.wordIndex)&&lyricTokenKey(mark.word)===lyricTokenKey(cue.word)));
+  const song=songs.find(item=>item.id===songId);
+  profanityPickerBusy=true;profanityPicker.querySelectorAll('button').forEach(button=>button.disabled=true);
+  try{
+    if(!song)throw new Error('Música não encontrada na biblioteca.');
+    await api('/api/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...song,profanityMarks:marks,profanityCues:cues})});
+    Object.assign(song,{profanityMarks:marks,profanityCues:cues});
+    if(current?.id===songId){Object.assign(current,{profanityMarks:marks,profanityCues:cues,playbackTracks:null,lyricIndex:null});updateLyrics(playbackPosition());}
+    profanityPickerBusy=false;closeProfanityPicker();
+    toast(interfaceLanguage==='en-US'?`${marks.length} selected occurrence(s) saved.`:`${marks.length} ocorrência${marks.length===1?'':'s'} marcada${marks.length===1?'':'s'}.`);
+  }catch(error){console.error('Falha ao salvar a censura',error);toast(interfaceLanguage==='en-US'?'Could not save. Your selection is still here to retry.':'Não consegui salvar. Sua seleção continua aqui para tentar novamente.');}
+  finally{profanityPickerBusy=false;profanityPicker.querySelectorAll('button').forEach(button=>button.disabled=false);}
 };
-profanityPicker.addEventListener('click', event => { if (event.target === profanityPicker) profanityPicker.classList.remove('show'); });
+profanityPicker.addEventListener('click',event=>{if(event.target===profanityPicker)closeProfanityPicker();});
+profanityPicker.addEventListener('keydown',event=>{
+  event.stopPropagation();
+  if(event.key==='Escape'){event.preventDefault();closeProfanityPicker();return;}
+  if(profanityPickerBusy)return;
+  const tab=event.target.closest('[data-censor-voice]');
+  if(tab&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+    event.preventDefault();const tracks=VoxStageLyrics.tracks,index=tracks.indexOf(tab.dataset.censorVoice);
+    const next=event.key==='Home'?0:event.key==='End'?tracks.length-1:(index+(event.key==='ArrowRight'?1:-1)+tracks.length)%tracks.length;
+    selectProfanityVoice(tracks[next],true);$('profanityPickerWords').scrollTop=0;
+  }
+  if(event.key==='Tab'){
+    const controls=[...profanityPicker.querySelectorAll('button:not(:disabled)')].filter(button=>button.getClientRects().length),first=controls[0],last=controls.at(-1);
+    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
+  }
+});
+
 const manualSyncDialog = document.createElement('div'); manualSyncDialog.className = 'manual-sync-dialog'; manualSyncDialog.id = 'manualSyncDialog';
-manualSyncDialog.innerHTML = `<section class="manual-sync-card" role="dialog" aria-modal="false" aria-labelledby="manualSyncTitle"><header><div><span class="lyrics-kicker">SINCRONIZAÇÃO LEVE</span><h2 id="manualSyncTitle">Marcar letra por linha</h2></div><button class="lyrics-close" id="closeManualSync" aria-label="Fechar">×</button></header><p class="manual-sync-copy" id="manualSyncCopy">Acompanhe a letra no palco. Use o botão grande quando a frase começar. A reprodução e a barra de busca continuam acessíveis.</p><div class="manual-sync-modes" role="group" aria-label="Método de sincronização"><button class="btn secondary selected" type="button" data-sync-mode="line" aria-pressed="true">Por linha</button><button class="btn secondary" type="button" data-sync-mode="word" aria-pressed="false">Palavra por palavra</button></div><div class="sync-focus-row" id="manualSyncFocusRow" role="group" aria-label="Foco vocal"><span>Foco</span><button class="btn secondary selected" type="button" data-sync-focus="lead" aria-pressed="true">Principal</button><button class="btn secondary" type="button" data-sync-focus="parallel" aria-pressed="false">Paralelo [ ]</button><button class="btn secondary" type="button" data-sync-focus="backing" aria-pressed="false">Backing ( )</button></div><button class="btn secondary manual-sync-repair-toggle" id="toggleLineRepair" type="button" aria-expanded="false" aria-pressed="false" hidden>Selecionar linhas para corrigir</button><div class="manual-sync-picker" id="manualSyncLinePicker" role="group" aria-label="Linhas para corrigir" hidden></div><textarea id="manualSyncText" rows="5" placeholder="Cole a letra aqui, uma linha por frase"></textarea><div class="manual-sync-current" id="manualSyncCurrent">Cole ou edite a letra acima.</div><div class="manual-sync-progress" id="manualSyncProgress">0 linhas marcadas</div><footer><button class="btn secondary" id="editManualLyrics" type="button" hidden>✎ Editar letra</button><button class="btn secondary" id="startManualSync">▶ Começar do início</button><button class="btn secondary" id="undoManualSync" disabled>↶ Desfazer</button><button class="btn" id="markManualSync" disabled>Marcar início da frase</button><button class="btn" id="saveManualSync" disabled>Salvar sync</button></footer></section>`;
+manualSyncDialog.innerHTML = `<section class="manual-sync-card" role="dialog" aria-modal="false" aria-labelledby="manualSyncTitle"><header><div><span class="lyrics-kicker">SINCRONIZAÇÃO LEVE</span><h2 id="manualSyncTitle">Marcar letra por linha</h2></div><button class="lyrics-close" id="closeManualSync" aria-label="Fechar">×</button></header><p class="manual-sync-copy" id="manualSyncCopy">Acompanhe a letra no palco. Use o botão grande quando a frase começar. A reprodução e a barra de busca continuam acessíveis.</p><div class="manual-sync-modes" role="group" aria-label="Método de sincronização"><button class="btn secondary selected" type="button" data-sync-mode="line" aria-pressed="true">Por linha</button><button class="btn secondary" type="button" data-sync-mode="word" aria-pressed="false">Palavra por palavra</button></div><div class="sync-focus-row" id="manualSyncFocusRow" role="group" aria-label="Foco vocal"><span>Foco</span><button class="btn secondary selected" type="button" data-sync-focus="lead" aria-pressed="true">Principal</button><button class="btn secondary" type="button" data-sync-focus="parallel" aria-pressed="false">Paralelo [ ]</button><button class="btn secondary" type="button" data-sync-focus="backing" aria-pressed="false">Backing ( )</button></div><button class="btn secondary manual-sync-repair-toggle" id="toggleLineRepair" type="button" aria-expanded="false" aria-pressed="false" hidden>Selecionar linhas para corrigir</button><div class="manual-sync-picker" id="manualSyncLinePicker" role="group" aria-label="Linhas para corrigir" hidden></div><div class="voice-editors" id="manualVoiceEditors"><label class="voice-editor" data-voice-editor="lead"><b>Voz 1</b><small>Vocal principal</small><textarea id="manualSyncText" rows="5" aria-label="Letra da Voz 1" placeholder="Uma frase por linha"></textarea></label><label class="voice-editor" data-voice-editor="parallel"><b>Voz 2</b><small>Dueto ou segunda voz, mesmo sozinha</small><textarea id="manualSyncParallelText" rows="5" aria-label="Letra da Voz 2" placeholder="Uma frase por linha"></textarea></label><label class="voice-editor" data-voice-editor="backing"><b>Backing</b><small>Apoios e respostas</small><textarea id="manualSyncBackingText" rows="5" aria-label="Letra do backing" placeholder="Uma frase por linha"></textarea></label></div><div class="manual-sync-current" id="manualSyncCurrent">Cole ou edite a letra acima.</div><div class="manual-sync-progress" id="manualSyncProgress">0 linhas marcadas</div><footer><button class="btn secondary" id="editManualLyrics" type="button" hidden>✎ Editar letra</button><button class="btn secondary" id="startManualSync">▶ Começar do início</button><button class="btn secondary" id="undoManualSync" disabled>↶ Desfazer</button><button class="btn" id="markManualSync" disabled>Marcar início da frase</button><button class="btn" id="saveManualSync" disabled>Salvar sync</button></footer></section>`;
 manualSyncDialog.querySelector('.manual-sync-modes').insertAdjacentHTML('afterend', '<section class="censor-sync-section"><b>Censura palavra por palavra</b><p>Escolha ocorrências e marque o início e o fim de cada uma, sem alterar o sync da letra.</p><button class="btn secondary" id="openProfanityPicker" type="button">Escolher palavras</button> <button class="btn secondary" id="startCensorSync" type="button">▶ Sincronizar censura</button></section>');
+manualSyncDialog.querySelector('#manualVoiceEditors').insertAdjacentHTML('beforeend','<div class="voice-extract"><button class="btn secondary" type="button" id="extractLegacyVoices">Extrair () e [] da Voz 1</button><small>Move parênteses para Backing e colchetes para Voz 2, inclusive na mesma linha. Os campos continuam independentes.</small></div>');
+manualSyncDialog.querySelector('#extractLegacyVoices').onclick=()=>{
+  if(manualSyncState)return;
+  try {
+    flushManualVoiceEditors();
+    manualSyncVoices=VoxStageLyrics.extractLegacy(manualSyncVoices,manualSyncEditor('lead').value);
+    for(const track of VoxStageLyrics.tracks)manualSyncEditor(track).value=VoxStageLyrics.editorText(manualSyncVoices[track]);
+    refreshManualVoicePanels();refreshManualSyncLinePicker();updateManualSaveButton();
+    toast('Trechos movidos para Voz 2 e Backing. Salve para manter.');
+  }catch(error){toast(error.message);}
+};
 manualSyncDialog.querySelector('#openProfanityPicker').onclick = openProfanityPickerForCurrent;
-manualSyncDialog.querySelector('#manualSyncProgress').insertAdjacentHTML('afterend', `<section class="manual-silence-tracker" aria-label="Marcador manual de silêncio"><div><strong>${interfaceLanguage === 'en-US' ? 'Manual vocal silence' : 'Silêncio vocal manual'}</strong><small id="manualSilenceStatus"></small><label class="silence-from-start"><input id="silenceFromStart" type="checkbox"> ${interfaceLanguage === 'en-US' ? 'Start with silence (0:00 → first tap marks the end)' : 'Começar com silêncio (0:00 → primeiro toque marca o fim)'}</label></div><div class="manual-silence-actions"><button class="btn secondary sync-silence-mode" id="toggleSilenceSync" type="button">${interfaceLanguage === 'en-US' ? 'Sync silence with Space' : 'Sincronizar silêncio com Espaço'}</button><button class="btn secondary" id="undoManualSilence" type="button" disabled>${interfaceLanguage === 'en-US' ? 'Undo last silence' : 'Desfazer último silêncio'}</button></div></section>`);
+manualSyncDialog.querySelector('#manualSyncProgress').insertAdjacentHTML('afterend', `<section class="manual-silence-tracker" aria-label="Marcador manual de silêncio"><div><strong>${interfaceLanguage === 'en-US' ? 'Manual vocal silence' : 'Silêncio vocal manual'}</strong><small id="manualSilenceStatus"></small><label class="silence-from-start"><input id="silenceFromStart" type="checkbox"> ${interfaceLanguage === 'en-US' ? 'Start with silence (0:00 → first tap marks the end)' : 'Começar com silêncio (0:00 → primeiro toque marca o fim)'}</label></div><div class="manual-silence-actions"><button class="btn secondary sync-silence-mode" id="toggleSilenceSync" type="button">${interfaceLanguage === 'en-US' ? 'Mark silences' : 'Marcar silêncios'}</button><button class="btn secondary" id="undoManualSilence" type="button" disabled>${interfaceLanguage === 'en-US' ? 'Undo last silence' : 'Desfazer último silêncio'}</button></div></section>`);
+const syncEditorCard=manualSyncDialog.querySelector('.manual-sync-card');
+syncEditorCard.setAttribute('aria-modal','true');
+syncEditorCard.querySelector('.lyrics-kicker').textContent='LETRAS E VOZES';
+const syncEditorBody=document.createElement('div');syncEditorBody.className='sync-editor-body';
+syncEditorCard.querySelector('header').after(syncEditorBody);
+const syncEditorToolbar=document.createElement('div');syncEditorToolbar.className='sync-editor-toolbar';
+const voiceTabs=manualSyncDialog.querySelector('#manualSyncFocusRow');
+voiceTabs.setAttribute('role','tablist');voiceTabs.setAttribute('aria-label','Voz para editar e sincronizar');
+syncEditorToolbar.append(voiceTabs,manualSyncDialog.querySelector('.manual-sync-modes'));
+syncEditorBody.append(syncEditorToolbar,manualSyncDialog.querySelector('#manualVoiceEditors'),manualSyncDialog.querySelector('#manualSyncCopy'),manualSyncDialog.querySelector('#toggleLineRepair'),manualSyncDialog.querySelector('#manualSyncLinePicker'));
+const voiceNames={lead:'Vocal principal',parallel:'Segunda voz',backing:'Apoios e respostas'};
+for(const [voice,name] of Object.entries(voiceNames)){
+  const old=manualSyncDialog.querySelector('[data-voice-editor="'+voice+'"]'),editor=old.querySelector('textarea');
+  const panel=document.createElement('section');panel.className='voice-editor';panel.dataset.voiceEditor=voice;
+  panel.id='manualVoicePanel-'+voice;panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby','manualVoiceTab-'+voice);panel.hidden=voice!=='lead';
+  panel.innerHTML='<div class="voice-editor-meta"><label for="'+editor.id+'">'+name+'</label><span data-voice-count="'+voice+'"></span></div>';
+  panel.append(editor);old.replaceWith(panel);
+  const tab=voiceTabs.querySelector('[data-sync-focus="'+voice+'"]');tab.id='manualVoiceTab-'+voice;tab.setAttribute('role','tab');tab.setAttribute('aria-controls',panel.id);
+}
+const syncEditorTools=document.createElement('div');syncEditorTools.className='sync-editor-tools';
+for(const [id,title,content] of [
+  ['syncCensorTool','Censura de palavras',manualSyncDialog.querySelector('.censor-sync-section')],
+  ['syncExtractTool','Separar vozes de uma letra',manualSyncDialog.querySelector('.voice-extract')],
+  ['syncSilenceTool','Silêncios vocais',manualSyncDialog.querySelector('.manual-silence-tracker')]
+]){
+  const detail=document.createElement('details');detail.className='sync-editor-tool';detail.id=id;
+  const summary=document.createElement('summary');summary.textContent=title;detail.append(summary,content);syncEditorTools.append(detail);
+}
+syncEditorBody.append(syncEditorTools,manualSyncDialog.querySelector('#manualSyncCurrent'),manualSyncDialog.querySelector('#manualSyncProgress'));
+syncEditorCard.querySelector('header').after(syncEditorBody);
+manualSyncDialog.querySelector('#extractLegacyVoices').textContent='Separar Voz 2 e Backing';
+voiceTabs.addEventListener('keydown',event=>{
+  if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||[...voiceTabs.querySelectorAll('button')].every(button=>button.disabled))return;
+  event.preventDefault();const buttons=[...voiceTabs.querySelectorAll('[data-sync-focus]')],index=buttons.indexOf(document.activeElement);
+  const next=event.key==='Home'?0:event.key==='End'?buttons.length-1:(index+(event.key==='ArrowRight'?1:-1)+buttons.length)%buttons.length;
+  buttons[next].focus();setManualSyncFocus(buttons[next].dataset.syncFocus);
+});
+function updateSyncEditorViewport(){
+  const viewport=window.visualViewport;
+  manualSyncDialog.style.setProperty('--sync-viewport-height',Math.min(innerHeight,viewport?.height||innerHeight)+'px');
+  manualSyncDialog.style.setProperty('--sync-viewport-top',(viewport?.offsetTop||0)+'px');
+}
+window.visualViewport?.addEventListener('resize',updateSyncEditorViewport);
+window.visualViewport?.addEventListener('scroll',updateSyncEditorViewport);
+window.addEventListener('resize',updateSyncEditorViewport);
+updateSyncEditorViewport();
 document.body.append(manualSyncDialog);
 // Setup is a real modal. Recording controls live inside the stage, never over the lyrics.
 const syncToolbar = document.createElement('section');
@@ -2730,9 +3161,8 @@ function updateSyncToolbar() {
   $('syncEdit').hidden = false;
   const lineIndex = (manualSyncState.lineTargets || manualSyncState.lines.map((_,index)=>index))[manualSyncState.nextIndex];
   const syncHint = manualSyncState.mode !== 'line' ? '' : manualSyncState.pendingBackingEnd
-    ? ' · toque na letra para marcar o fim do backing'
-    : isBackingLyric(manualSyncState.lines[lineIndex]) ? ' · toque na letra no começo e no fim do backing'
-      : ' · toque na letra quando a frase começar';
+    ? ' · toque na letra para marcar o fim da frase'
+    : lineIndex!==undefined ? ' · toque na letra quando a frase começar' : '';
   $('syncStageStatus').textContent = `${syncFocusLabel(manualSyncState.focus)} · ${$('manualSyncProgress').textContent}${syncHint}`;
   $('syncUndo').disabled = $('undoManualSync').disabled;
   $('syncSave').disabled = $('saveManualSync').disabled;
@@ -2742,21 +3172,50 @@ $('syncPause').onclick = () => { toggle(); updateSyncToolbar(); };
 $('syncUndo').onclick = () => undoManualSyncLine();
 $('syncEdit').onclick = () => editManualLyrics();
 $('syncSave').onclick = () => saveManualSync();
-$('syncCancel').onclick = () => {
-  pausePlayback();
-  manualSyncDialog.classList.add('show');
-  manualSyncDialog.classList.add('confirm-discard');
-  $('manualSyncCopy').textContent = 'As marcações ainda não foram salvas. Feche para descartar ou continue a edição.';
-  $('startManualSync').hidden = false;
-  $('startManualSync').textContent = 'Continuar edição';
-};
+$('syncCancel').onclick = () => $('closeManualSync').click();
+let manualSyncReturn = null;
+let manualSyncVoices = null;
 let manualSyncState = null;
+let manualVoiceSavePending = false;
 let manualSyncMode = 'line';
 let manualSyncFocus = 'lead';
 let manualSyncRepairEnabled = false;
 let manualSyncCanRepair = false;
 let manualSyncPickerState = {lines:[], ids:[], selectedIds:new Set(), nextId:0};
 let manualSilenceStartMs = null;
+function manualSyncEditor(track = manualSyncFocus) {
+  return $(track==='backing'?'manualSyncBackingText':track==='parallel'?'manualSyncParallelText':'manualSyncText');
+}
+function manualEditorLines() {
+  return VoxStageLyrics.voiceTextRows(manualSyncEditor().value,manualSyncFocus).map(row=>VoxStageLyrics.encode(row.text,manualSyncFocus));
+}
+function refreshManualVoicePanels(){
+  if(!manualSyncState)$('startManualSync').disabled=!manualSyncEditor().value.trim()||!current?.buffers?.Inst;
+  for(const voice of VoxStageLyrics.tracks){
+    const panel=$('manualVoicePanel-'+voice),count=manualSyncEditor(voice).value.split(/\r?\n/).filter(line=>line.trim()).length;
+    panel.hidden=voice!==manualSyncFocus;panel.classList.toggle('selected',!panel.hidden);
+    panel.querySelector('[data-voice-count]').textContent=interfaceLanguage==='en-US'?(count?count+' line'+(count===1?'':'s'):'No lyrics'):(count?count+' linha'+(count===1?'':'s'):'Sem letra');
+  }
+}
+function restoreManualVoiceEditors() {
+  $('manualVoiceEditors').hidden=false;
+  $('extractLegacyVoices').disabled=Boolean(manualSyncState);
+  syncEditorTools.hidden=Boolean(manualSyncState);
+  for(const track of VoxStageLyrics.tracks) {const editor=manualSyncEditor(track);editor.hidden=false;editor.disabled=false;}
+  refreshManualVoicePanels();
+}
+function flushManualVoiceEditors() {
+  if(!manualSyncVoices)return;
+  for(const track of VoxStageLyrics.tracks) {
+    const text=manualSyncEditor(track).value;
+    if(text.split(/\r?\n/).filter(line=>line.trim()).length>500 || VoxStageLyrics.words(text).length>5000)
+      throw new Error('Use até 500 linhas e 5.000 palavras por voz.');
+    manualSyncVoices[track]=VoxStageLyrics.reconcile(manualSyncVoices[track],text,track);
+  }
+}
+function manualSyncNeedsEnd(line) {
+  return Boolean(String(line||'').trim());
+}
 function updateManualSilenceControls() {
   const undoButton = $('undoManualSilence'), status = $('manualSilenceStatus');
   if (!undoButton || !status) return;
@@ -2765,11 +3224,11 @@ function updateManualSilenceControls() {
   const heading = status.closest('.manual-silence-tracker')?.querySelector('strong');
   if (heading) heading.textContent = interfaceLanguage === 'en-US' ? 'Manual vocal silence' : 'Silêncio vocal manual';
   const fromStartLabel=$('silenceFromStart')?.closest('label');
-  if (fromStartLabel) fromStartLabel.lastChild.textContent=interfaceLanguage === 'en-US' ? ' Start with silence (0:00 → first tap marks the end)' : ' Começar com silêncio (0:00 → primeiro toque marca o fim)';
+  if (fromStartLabel) fromStartLabel.lastChild.textContent=interfaceLanguage === 'en-US' ? ' Start with silence (from 0:00)' : ' Começar com silêncio (a partir de 0:00)';
   undoButton.textContent = interfaceLanguage === 'en-US' ? 'Undo last silence' : 'Desfazer último silêncio';
   undoButton.disabled = !marks.length;
   const modeButton = $('toggleSilenceSync');
-  if (modeButton) { modeButton.textContent = interfaceLanguage === 'en-US' ? 'Sync silence with Space' : 'Sincronizar silêncio com Espaço'; modeButton.disabled=!current?.buffers?.Inst; }
+  if (modeButton) { modeButton.textContent = interfaceLanguage === 'en-US' ? 'Mark silences' : 'Marcar silêncios'; modeButton.disabled=!current?.buffers?.Inst; }
   const savedCount = marks.length;
   status.textContent = pending
     ? interfaceLanguage === 'en-US' ? `Start marked at ${(manualSilenceStartMs / 1000).toFixed(1)}s · mark the end` : `Início marcado em ${(manualSilenceStartMs / 1000).toFixed(1)}s · marque o fim`
@@ -2855,35 +3314,44 @@ async function undoLastManualSilence() {
   catch (error) { console.error('Falha ao remover silêncio vocal', error); toast(interfaceLanguage === 'en-US' ? 'Could not remove this silence.' : 'Não consegui remover esse silêncio.'); }
 }
 const manualSyncFocusLabels = {
-  lead: {pt:'Principal', en:'Lead'},
-  parallel: {pt:'Paralelo [ ]', en:'Parallel [ ]'},
-  backing: {pt:'Backing ( )', en:'Backing ( )'}
+  lead: {pt:'Voz 1', en:'Voice 1'},
+  parallel: {pt:'Voz 2', en:'Voice 2'},
+  backing: {pt:'Backing', en:'Backing'}
 };
 function syncFocusLabel(focus = manualSyncFocus) {
   const labels = manualSyncFocusLabels[focus] || manualSyncFocusLabels.lead;
   return interfaceLanguage === 'en-US' ? labels.en : labels.pt;
 }
 function setManualSyncFocus(focus) {
-  if (manualSyncState && focus !== manualSyncFocus) return;
+  const editingSession=manualSyncState&&['line','word'].includes(manualSyncState.mode)&&manualSyncDialog.classList.contains('show');
+  if (manualSyncState && !editingSession && focus !== manualSyncFocus) return;
   manualSyncFocus = ['lead','parallel','backing'].includes(focus) ? focus : 'lead';
   document.querySelectorAll('[data-sync-focus]').forEach(button => {
     const selected = button.dataset.syncFocus === manualSyncFocus;
     const optionLabels = interfaceLanguage === 'en-US'
-      ? {lead:'Lead',parallel:'Parallel [ ]',backing:'Backing ( )'}
-      : {lead:'Principal',parallel:'Paralelo [ ]',backing:'Backing ( )'};
+      ? {lead:'Voice 1',parallel:'Voice 2',backing:'Backing'}
+      : {lead:'Voz 1',parallel:'Voz 2',backing:'Backing'};
     button.textContent = optionLabels[button.dataset.syncFocus] || optionLabels.lead;
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', String(selected));
-    button.disabled = Boolean(manualSyncState);
+    button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;
+    button.disabled = Boolean(manualSyncState&&!editingSession);
   });
   document.querySelectorAll('.sync-focus-row>span').forEach(label=>{label.textContent=interfaceLanguage==='en-US'?'Focus':'Foco';});
-  const focusCopy = manualSyncFocus === 'backing'
-    ? interfaceLanguage === 'en-US' ? 'Focus on lines in parentheses. In line mode, mark the backing start and tap again when it ends.' : 'Foco nas linhas entre parênteses. No modo por linha, marque o começo do backing e toque de novo quando terminar.'
-    : manualSyncFocus === 'parallel'
-      ? interfaceLanguage === 'en-US' ? 'Focus on words inside square brackets. Brackets are markers and will not appear on stage.' : 'Foco nas palavras entre colchetes. Os colchetes são marcadores e não aparecem no palco.'
-      : interfaceLanguage === 'en-US' ? 'Focus on the main vocal. Backing lines remain in the combined lyrics.' : 'Foco no vocal principal. Os backings continuam na letra combinada.';
-  if (!manualSyncState) $('manualSyncCopy').textContent = focusCopy;
-  updateSyncToolbar();
+  refreshManualVoicePanels();
+  if(!manualSyncState)$('startManualSync').textContent=(interfaceLanguage==='en-US'?'Sync ':'Sincronizar ')+syncFocusLabel();
+  if (!manualSyncState) {
+    $('manualSyncCopy').textContent=interfaceLanguage==='en-US'?'Edit one voice at a time. The other voices keep their lyrics and timing.':'Edite uma voz por vez. As outras mantêm suas letras e seus tempos.';
+    manualSyncPickerState={lines:[],ids:[],selectedIds:new Set(),nextId:0};
+    if(manualSyncVoices)refreshManualSyncLinePicker();
+    updateManualSaveButton();
+  }
+  if(editingSession){
+    const other=manualSyncFocus!==manualSyncState.focus;
+    $('editManualLyrics').textContent=other?(interfaceLanguage==='en-US'?'Return to '+syncFocusLabel(manualSyncState.focus)+' sync':'Retomar sync · '+syncFocusLabel(manualSyncState.focus)):(interfaceLanguage==='en-US'?'Apply lyrics and return':'Aplicar letra e voltar');
+    $('manualSyncCopy').textContent=interfaceLanguage==='en-US'?'Sync for '+syncFocusLabel(manualSyncState.focus)+' is paused. You can save another voice here without saving or discarding its timing marks.':'Sync pausado · '+syncFocusLabel(manualSyncState.focus)+'. Salve outras letras sem alterar as marcações em andamento.';
+  }
+  updateManualSaveButton();updateSyncToolbar();
 }
 function manualSyncLineIndices(lines, focus = manualSyncFocus) {
   return lines.map((line,index) => {
@@ -2915,9 +3383,9 @@ function mapLyricLineIndices(sourceLines, targetLines, includeEdited = false) {
   if (includeEdited) for (let anchor = 1; anchor < anchors.length; anchor++) {
     const [previousSource, previousTarget] = anchors[anchor - 1], [nextSource, nextTarget] = anchors[anchor];
     const sourceCount = nextSource - previousSource - 1, targetCount = nextTarget - previousTarget - 1;
-    if (!sourceCount || !targetCount) continue;
+    if (!sourceCount || sourceCount!==targetCount) continue;
     for (let offset = 0; offset < sourceCount; offset++) {
-      const targetOffset = Math.min(targetCount - 1, Math.floor(offset * targetCount / sourceCount));
+      const targetOffset = offset;
       map.set(previousSource + 1 + offset, previousTarget + 1 + targetOffset);
     }
   }
@@ -2933,36 +3401,17 @@ function manualSyncEntryMatchesFocus(line, entry, focus = manualSyncFocus) {
   if (backing) return false;
   return focus !== 'parallel' || entry.parallel === true;
 }
-function manualSyncFirstWordStart(queue, lines, sourceLines) {
-  const first = queue[0];
-  if (!first) return 0;
-  const linesMatch = sourceLines.length === lines.length && lines.every((line,index)=>sourceLines[index]?.text?.trim() === line.trim());
-  const start = linesMatch ? Number(sourceLines[first.lineIndex]?.time) / 1000 : 0;
-  if (manualSyncFocus==='parallel' && linesMatch) {
-    const savedStartValue=current.parallelLineStarts?.[first.lineIndex], savedStart=Number(savedStartValue);
-    if (savedStartValue!=null && Number.isFinite(savedStart)) return Math.max(0,savedStart/1000);
-    const saved=current.parallelWordTimings?.find(item=>Number(item.lineIndex)===first.lineIndex)?.words?.find(word=>lyricTokenKey(word.word)===lyricTokenKey(first.word));
-    if (Number.isFinite(Number(saved?.start))) return Math.max(0,Number(saved.start));
-  }
-  if (!Number.isFinite(start) || manualSyncFocus !== 'parallel') return Number.isFinite(start) ? Math.max(0,start) : 0;
-  const entries = lyricWordEntries(lines[first.lineIndex] || '');
-  const nextLead = linesMatch ? sourceLines.slice(first.lineIndex + 1).find(line=>!isBackingLyric(line.text)) : null;
-  const end = nextLead?.time != null ? Number(nextLead.time) / 1000 : current?.buffers?.Inst?.duration || start + 5;
-  const weights = estimateWordWeights(entries.map(entry=>entry.word));
-  const total = weights.reduce((sum,weight)=>sum+weight,0);
-  const before = weights.slice(0,first.wordIndex).reduce((sum,weight)=>sum+weight,0);
-  return Math.max(start,Math.min(end,start + Math.max(0,end-start)*(total ? before/total : 0)));
-}
 function renderManualSyncStagePreview() {
+  if($('lyricSecondLine'))$('lyricSecondLine').hidden=true;
   const state = manualSyncState;
   if (!state || !current) return;
   const isWordMode = state.mode === 'word' || state.mode === 'censor';
   let lineIndex, wordIndex = -1, nextLineIndex, nextWord;
   if (isWordMode) {
-    const cursor = state.finished ? state.queue.length - 1 : state.nextIndex;
+    const cursor = state.finished ? state.queue.length - 1 : state.awaitingStart ? Math.max(0,state.nextIndex-1) : state.nextIndex;
     const target = state.queue[cursor];
     if (!target) return;
-    lineIndex = target.lineIndex; wordIndex = target.wordIndex;
+    lineIndex = target.lineIndex; wordIndex = state.awaitingStart ? -1 : target.wordIndex;
     nextWord = state.queue[cursor + 1];
     if (nextWord && nextWord.lineIndex !== lineIndex) nextLineIndex = nextWord.lineIndex;
   } else {
@@ -2989,7 +3438,12 @@ function renderManualSyncStagePreview() {
   state.parallelPreviewUpcomingIndex=state.focus==='parallel'
     ? nextWord?.lineIndex===lineIndex && entries[nextWord.wordIndex]?.parallel ? nextWord.wordIndex : -1
     : parallelPositions[parallelOrdinal+1]??-1;
-  const previewKey = `${state.mode}:${lineIndex}:${wordIndex}:${nextLineIndex ?? ''}:${state.finished ? 'done' : 'active'}:${state.nextIndex}`;
+  if(state.awaitingStart){
+    const upcoming=state.queue[state.nextIndex];
+    state.nextPreviewWordIndex=upcoming?.lineIndex===lineIndex&&!upcoming.parallel?upcoming.wordIndex:-1;
+    state.parallelPreviewUpcomingIndex=upcoming?.lineIndex===lineIndex&&upcoming.parallel?upcoming.wordIndex:-1;
+  }
+  const previewKey = `${state.mode}:${lineIndex}:${wordIndex}:${nextLineIndex ?? ''}:${state.finished ? 'done' : state.awaitingStart ? 'pause' : 'active'}:${state.nextIndex}`;
   if (state.stagePreviewKey !== previewKey || !$('lyricCurrentLine')) {
     const markup = isWordMode
       ? lyricEntriesMarkup(entries, 'lyric-word', (entry, index) => `${processingSettings.markProfanity === true && isProfanityOccurrence(lineIndex,index,entry.word) ? 'profanity ' : ''}${entry.parallel ? (index === state.parallelPreviewWordIndex ? 'active ' : index === state.parallelPreviewUpcomingIndex ? 'upcoming ' : '') : (index === state.leadPreviewWordIndex ? 'active ' : index === state.nextPreviewWordIndex ? 'upcoming ' : '')}${state.focus === 'backing' && !entry.parallel ? 'backing-focus-word' : ''}`.trim())
@@ -3031,13 +3485,18 @@ function renderManualSyncStagePreview() {
     positionPreviewMarker(parallelMarker,words[state.parallelPreviewWordIndex],'stageParallelMarkerKey',`${previewKey}:parallel:${state.parallelPreviewWordIndex}`);
   }
 }
-function manualSyncWords(lines, focus = manualSyncFocus) {
-  return lines.flatMap((line, lineIndex) => lyricWordEntries(line).flatMap((entry, wordIndex) => manualSyncEntryMatchesFocus(line, entry, focus) ? [{lineIndex, wordIndex, word:entry.word, parallel:entry.parallel, backing:isBackingLyric(line)}] : []));
+function manualSyncWords(lines,focus=manualSyncFocus){
+  const rows=VoxStageLyrics.voiceTextRows(manualSyncEditor(focus).value,focus);
+  return lines.flatMap((line,lineIndex)=>lyricWordEntries(line).flatMap((entry,wordIndex)=>{
+    const row=rows[lineIndex],selected=row?.activeWordIndices;
+    if(!manualSyncEntryMatchesFocus(line,entry,focus)||selected&&!selected.includes(wordIndex))return [];
+    return [{lineIndex,wordIndex,word:entry.word,parallel:entry.parallel,backing:isBackingLyric(line),breakBefore:wordIndex===(selected?.[0]??0)&&row?.breakBefore===true}];
+  }));
 }
 function refreshManualSyncLinePicker() {
   const picker = $('manualSyncLinePicker');
   if (!picker) return;
-  const lines = $('manualSyncText').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const lines = manualEditorLines();
   const pickerState = manualSyncPickerState;
   const visibleIds = new Set([...picker.querySelectorAll('input[data-line-id]')].map(input => input.dataset.lineId));
   const selectedIds = new Set(pickerState.selectedIds);
@@ -3070,53 +3529,22 @@ function setManualSyncMode(mode) {
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', String(selected));
   });
-  $('manualSyncTitle').textContent = manualSyncMode === 'word'
-    ? interfaceLanguage === 'en-US' ? 'Sync lyrics word by word' : 'Marcar letra palavra por palavra'
-    : interfaceLanguage === 'en-US' ? 'Sync lyrics line by line' : 'Marcar letra por linha';
+  $('manualSyncTitle').textContent=interfaceLanguage==='en-US'?'Lyrics editor':'Editor de letras';
+  if(!manualSyncState)$('startManualSync').textContent=(interfaceLanguage==='en-US'?'Sync ':'Sincronizar ')+syncFocusLabel();
   $('manualSyncProgress').textContent = manualSyncMode === 'word'
     ? interfaceLanguage === 'en-US' ? '0 words marked' : '0 palavras marcadas'
     : interfaceLanguage === 'en-US' ? '0 lines marked' : '0 linhas marcadas';
   $('markManualSync').textContent = manualSyncMode === 'word'
     ? interfaceLanguage === 'en-US' ? '✓ Word ended · next' : '✓ Palavra terminou · avançar'
     : interfaceLanguage === 'en-US' ? '✓ Mark phrase start' : '✓ Marcar início da frase';
-  const modeCopy = manualSyncMode === 'word'
-    ? interfaceLanguage === 'en-US'
-      ? 'The displayed word is the current one. Let it play, then tap the large button when it ends; the next word starts at that moment. The first word uses the existing line timing or 0:00.'
-      : 'A palavra exibida é a atual. Deixe o áudio tocar e toque no botão grande quando ela terminar; a próxima começa nesse instante. A primeira usa o tempo da linha existente ou 0:00.'
+  $('manualSyncCopy').textContent=manualSyncMode==='word'
+    ? interfaceLanguage==='en-US'?'Tap to mark the first start, then each word end. Blank lines separate passages.':'Marque o início com um toque; depois, os finais das palavras. Linha vazia separa trechos.'
     : manualSyncRepairEnabled
-      ? interfaceLanguage === 'en-US' ? 'Select only the lines that are out of sync. Tap when each phrase begins; backing lines in parentheses need a second tap at the end.' : 'Marque abaixo só as linhas fora de sincronia. Toque quando cada frase começar; backings entre parênteses precisam de outro toque no fim.'
-      : interfaceLanguage === 'en-US' ? 'Follow the lyrics on stage. Tap when each phrase begins. Backing lines in parentheses need a second tap at the end.' : 'Acompanhe a letra no palco. Toque quando cada frase começar. Backings entre parênteses precisam de outro toque no fim.';
-  const focusNote = manualSyncFocus === 'parallel'
-    ? interfaceLanguage === 'en-US' ? ' Focus: [ ] has its own timing; the main vocal is preserved and both markers can move at once.' : ' Foco: [ ] tem sincronia própria; o vocal principal é preservado e os dois pontos podem avançar juntos.'
-    : manualSyncFocus === 'backing'
-      ? interfaceLanguage === 'en-US' ? ' Focus: parenthesized backing has its own timing. Line sync asks for a start and an end.' : ' Foco: o backing entre parênteses tem sincronia própria. No sync por linha, marque início e fim.'
-      : interfaceLanguage === 'en-US' ? ' Focus: main vocal timing. Parallel and backing timings are preserved.' : ' Foco: sincronia do vocal principal. Paralelo e backing são preservados.';
-  $('manualSyncCopy').textContent = modeCopy + focusNote;
+      ? interfaceLanguage==='en-US'?'Select only the lines you want to sync again.':'Selecione apenas as linhas que quer sincronizar novamente.'
+      : interfaceLanguage==='en-US'?'Tap at each phrase start, then tap again at its end.':'Toque no início de cada frase e depois no fim. Vale para as três vozes.';
+  $('manualSyncCopy').title=manualSyncMode==='word'?(interfaceLanguage==='en-US'?'The first tap marks the first word start. Blank lines let you end a passage and start the next later.':'O primeiro toque marca o início da primeira palavra. Uma linha vazia permite encerrar o trecho e começar o próximo depois.'):(interfaceLanguage==='en-US'?'Each phrase needs a start and an end tap, including the final phrase.':'Cada frase precisa de um toque no início e outro no fim, inclusive a última.');
   $('toggleLineRepair').hidden = manualSyncMode !== 'line' || !manualSyncCanRepair;
   if (manualSyncMode !== 'line') $('manualSyncLinePicker').hidden = true;
-}
-function manualSyncLinesFromCurrent() {
-  const source = current?.plainLyrics || current?.lyricLines?.map(line=>line.text).join('\n') || current?.syncedLyrics || '';
-  const lines = String(source).split(/\r?\n/).map(line => line.replace(/^\s*\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]\s*/, '').trim()).filter(Boolean);
-  const keys = new Set(lines.map(lyricLineKey));
-  const backings = [
-    ...(current?.backingPlainLyrics || '').split(/\r?\n/).map(line=>line.trim()).filter(Boolean),
-    ...(current?.lyricLines || []).filter(line=>isBackingLyric(line.text)).map(line=>line.text.trim())
-  ];
-  for (const raw of backings) {
-    const line = isBackingLyric(raw) ? raw : `(${raw})`, key = lyricLineKey(line);
-    if (!key || keys.has(key)) continue;
-    const timed = (current?.lyricLines || []).find(item=>lyricLineKey(item.text)===key);
-    let insertAt = -1;
-    if (timed) insertAt = lines.findIndex(candidate=>{
-      if (isBackingLyric(candidate)) return false;
-      const match = (current?.lyricLines || []).find(item=>lyricLineKey(item.text)===lyricLineKey(candidate));
-      return match && Number(match.time) > Number(timed.time);
-    });
-    lines.splice(insertAt >= 0 ? insertAt : lines.length, 0, line);
-    keys.add(key);
-  }
-  return lines.join('\n');
 }
 function openManualLineSync() {
   if (!current) { toast('Selecione uma música e abra a apresentação primeiro.'); return; }
@@ -3127,10 +3555,13 @@ function openManualLineSync() {
   }
   if (manualSyncState) { enterSyncStage(); return; }
   leaveSyncStage();
+  manualSyncReturn={songId:current.id,position:playbackPosition(),playing};
   manualSyncDialog.classList.remove('confirm-discard');
-  $('manualSyncText').value = manualSyncLinesFromCurrent();
+  manualSyncVoices=VoxStageLyrics.fromLegacy(current,current.lyricLines?current:unifiedLyricsForSong(current),lyricWordEntries);
+  manualSyncFocus='lead';
+  for(const track of VoxStageLyrics.tracks)manualSyncEditor(track).value=VoxStageLyrics.editorText(manualSyncVoices[track]);
+  restoreManualVoiceEditors();
   manualSyncPickerState = {lines:[], ids:[], selectedIds:new Set(), nextId:0};
-  $('manualSyncText').placeholder = interfaceLanguage === 'en-US' ? 'Paste one phrase per line. Use (parentheses) for backing and [brackets] for parallel vocals.' : 'Cole uma frase por linha. Use (parênteses) para backing e [colchetes] para vocal paralelo.';
   $('manualSyncCurrent').classList.remove('manual-sync-phrase');
   manualSyncState = null;
   manualSyncDialog.classList.remove('recording');
@@ -3141,22 +3572,30 @@ function openManualLineSync() {
   setManualSyncFocus(manualSyncFocus);
   $('toggleLineRepair').classList.remove('selected'); $('toggleLineRepair').setAttribute('aria-pressed', 'false'); $('toggleLineRepair').setAttribute('aria-expanded', 'false');
   $('manualSyncLinePicker').hidden = true; $('manualSyncLinePicker').replaceChildren(); refreshManualSyncLinePicker();
-  $('manualSyncText').hidden = false; $('manualSyncText').disabled = false; $('editManualLyrics').hidden = true;
+  manualSyncEditor().hidden = false; manualSyncEditor().disabled = false; $('editManualLyrics').hidden = true;
   $('startManualSync').hidden = false; $('startManualSync').disabled = false;
   $('startManualSync').textContent = 'Começar sincronização';
   manualSyncDialog.querySelector('.manual-sync-modes').hidden = false;
   $('manualSyncCurrent').textContent = interfaceLanguage === 'en-US' ? 'Paste or edit the lyrics above.' : 'Cole ou edite a letra acima.';
   $('manualSyncProgress').textContent = interfaceLanguage === 'en-US' ? '0 lines marked' : '0 linhas marcadas';
   setManualSyncMode('line');
-  $('markManualSync').disabled = true; $('undoManualSync').disabled = true; $('saveManualSync').disabled = !$('manualSyncText').value.trim(); $('saveManualSync').textContent = interfaceLanguage === 'en-US' ? 'Save lyrics' : 'Salvar letra';
+  $('markManualSync').disabled = true; $('undoManualSync').disabled = true; $('saveManualSync').disabled = !manualSyncEditor().value.trim(); $('saveManualSync').textContent = interfaceLanguage === 'en-US' ? 'Save lyrics' : 'Salvar letra';
   updateManualSilenceControls();
   manualSyncDialog.classList.add('show');
   manualSyncDialog.querySelector('.manual-sync-card header').append($('closeManualSync'));
-  $('manualSyncText').focus();
+  updateSyncEditorViewport();
+  syncEditorBody.scrollTop=0;
+  for(const tool of syncEditorTools.querySelectorAll('details'))tool.open=false;
+  refreshManualVoicePanels();updateManualSaveButton();
+  if(!mobileNative&&matchMedia('(pointer:fine)').matches)manualSyncEditor().focus({preventScroll:true});
 }
 function updateManualSaveButton() {
-  const button = $('saveManualSync'), editor = $('manualSyncText');
+  const button = $('saveManualSync'), editor = manualSyncEditor();
   if (!button || !editor) return;
+  if(manualVoiceSavePending){button.disabled=true;button.textContent=interfaceLanguage==='en-US'?'Saving…':'Salvando…';return;}
+  if(manualSyncState&&['line','word'].includes(manualSyncState.mode)&&manualSyncDialog.classList.contains('show')&&manualSyncFocus!==manualSyncState.focus){
+    button.disabled=false;button.textContent=(interfaceLanguage==='en-US'?'Save ':'Salvar letra · ')+syncFocusLabel();return;
+  }
   if (manualSyncState?.mode === 'censor') {
     button.disabled = !manualSyncState.cues?.length;
     button.textContent = interfaceLanguage === 'en-US' ? 'Save censorship' : 'Salvar censura';
@@ -3168,11 +3607,11 @@ function updateManualSaveButton() {
     return;
   }
   if (manualSyncState && !editor.hidden && !editor.disabled) { button.disabled = true; return; }
-  const hasText = Boolean((manualSyncState?.lines?.join('\n') || editor.value).trim());
+  const hasText = Boolean(manualSyncState?.lines?.length || VoxStageLyrics.tracks.some(track=>manualSyncEditor(track).value.trim()) || current?.lyricLines?.length);
   if (!hasText) { button.disabled = true; button.textContent = interfaceLanguage === 'en-US' ? 'Save lyrics' : 'Salvar letra'; return; }
   if (!manualSyncState) { button.disabled = false; button.textContent = interfaceLanguage === 'en-US' ? 'Save lyrics' : 'Salvar letra'; return; }
   const state = manualSyncState;
-  const hasMarks = state.mode === 'word' ? state.times.length > 1 || state.finished : state.times.length > 0 || Object.keys(state.lineEnds || {}).length > 0;
+  const hasMarks = state.mode === 'word' ? state.times.length > 1 || Object.keys(state.wordEnds||{}).length>0 || state.finished : state.times.length > 0 || Object.keys(state.lineEnds || {}).length > 0;
   const complete = state.mode === 'word'
     ? state.finished
     : state.nextIndex >= (state.lineTargets?.length || 0) && !state.pendingBackingEnd;
@@ -3212,23 +3651,33 @@ function updateManualSyncProgress() {
   if (manualSyncState.mode === 'word') {
     const queue = manualSyncState.queue, cursor = manualSyncState.nextIndex;
     const target = manualSyncState.finished ? null : queue[cursor];
+    const awaitingStart=manualSyncState.awaitingStart,initialStart=awaitingStart&&cursor===0;
     const phraseTarget = target || queue.at(-1);
     const nextTarget = !manualSyncState.finished ? queue[cursor + 1] : null;
     const currentWordLabel = interfaceLanguage === 'en-US' ? 'CURRENT WORD' : 'PALAVRA ATUAL';
     const nextWordLabel = interfaceLanguage === 'en-US' ? 'NEXT WORD' : 'PRÓXIMA PALAVRA';
-    const allStarted = times.length === queue.length;
     $('manualSyncProgress').textContent = manualSyncState.finished
       ? interfaceLanguage === 'en-US' ? 'All words synced · ready to save' : 'Todas as palavras sincronizadas · pronto para salvar'
+      : initialStart ? interfaceLanguage==='en-US'?`First word: ${target.word} · seek if needed, then tap when it starts`:`Primeira palavra: ${target.word} · avance se precisar e toque quando ela começar`
+      : awaitingStart ? interfaceLanguage==='en-US'?'Pause · seek to the next passage, then tap when it starts':'Pausa · avance até o próximo trecho e toque quando ele começar'
       : target ? interfaceLanguage === 'en-US' ? `Word ${cursor + 1} of ${queue.length} · tap when it ends` : `Palavra ${cursor + 1} de ${queue.length} · toque quando terminar` : interfaceLanguage === 'en-US' ? 'All words are marked.' : 'Todas as palavras foram marcadas.';
     $('manualSyncCurrent').classList.remove('manual-sync-phrase');
-    $('manualSyncCurrent').innerHTML = phraseTarget
+    $('manualSyncCurrent').innerHTML = awaitingStart
+      ? `<span class="manual-sync-context">${initialStart?(interfaceLanguage==='en-US'?'FIRST PASSAGE':'PRIMEIRO TRECHO'):(interfaceLanguage==='en-US'?'NEXT PASSAGE':'PRÓXIMO TRECHO')}</span><span class="manual-sync-target">${manualSyncLineMarkup(lines[target.lineIndex])}</span>`
+      : phraseTarget
       ? `<span class="manual-sync-context">${currentWordLabel}</span><span class="manual-sync-target">${esc(phraseTarget.word)}</span>${nextTarget ? `<span class="manual-sync-upcoming"><small>${nextWordLabel}</small>${esc(nextTarget.word)}</span>` : ''}`
       : 'Todas as palavras foram marcadas. Salve para aplicar a sincronia.';
-    $('markManualSync').textContent = target && cursor < queue.length - 1
+    $('markManualSync').textContent = initialStart
+      ? interfaceLanguage==='en-US'?'▶ Mark first word start':'▶ Marcar início da primeira palavra'
+      : awaitingStart
+      ? interfaceLanguage==='en-US'?'▶ Mark next passage start':'▶ Marcar início do próximo trecho'
+      : queue[cursor+1]?.breakBefore
+      ? interfaceLanguage==='en-US'?'✓ End phrase · pause':'✓ Encerrar frase · pausa'
+      : target && cursor < queue.length - 1
       ? interfaceLanguage === 'en-US' ? '✓ Word ended · next' : '✓ Palavra terminou · avançar'
       : interfaceLanguage === 'en-US' ? '✓ Finish last word' : '✓ Concluir última palavra';
     $('markManualSync').disabled = !manualSyncState.running || manualSyncState.finished || cursor >= queue.length;
-    $('undoManualSync').disabled = !manualSyncState.finished && times.length <= 1;
+    $('undoManualSync').disabled = !manualSyncState.finished && times.length===0;
     updateManualSaveButton();
     renderManualSyncStagePreview();
   } else {
@@ -3238,7 +3687,7 @@ function updateManualSyncProgress() {
     const targetLine = targets[nextIndex];
     const nextLine = targets[nextIndex + 1] !== undefined ? lines[targets[nextIndex + 1]] : '';
     const backingPending = manualSyncState.pendingBackingEnd;
-    const backingCount = targets.filter(index => isBackingLyric(lines[index])).length;
+    const backingCount = targets.filter(index => manualSyncNeedsEnd(lines[index])).length;
     const completedMarks = times.length + Object.keys(manualSyncState.lineEnds || {}).length;
     const totalMarks = targets.length + backingCount;
     const currentLineLabel = interfaceLanguage === 'en-US' ? 'CURRENT LINE' : 'LINHA ATUAL';
@@ -3247,7 +3696,7 @@ function updateManualSyncProgress() {
       ? interfaceLanguage === 'en-US' ? targets.length === 1 ? 'selected line' : 'selected lines' : targets.length === 1 ? 'linha selecionada' : 'linhas selecionadas'
       : interfaceLanguage === 'en-US' ? targets.length === 1 ? 'line' : 'lines' : targets.length === 1 ? 'linha' : 'linhas';
     $('manualSyncProgress').textContent = backingPending
-      ? interfaceLanguage === 'en-US' ? `Backing line started · tap again when it ends (${completedMarks}/${totalMarks})` : `Backing começou · toque de novo quando terminar (${completedMarks}/${totalMarks})`
+      ? interfaceLanguage === 'en-US' ? `Phrase started · tap again when it ends (${completedMarks}/${totalMarks})` : `Frase começou · toque de novo quando terminar (${completedMarks}/${totalMarks})`
       : interfaceLanguage === 'en-US'
         ? `${completedMarks} of ${totalMarks} timing marks · ${times.length} ${scopeLabel} started${nextIndex === targets.length ? ' · ready to save' : ''}`
         : `${completedMarks} de ${totalMarks} marcações · ${times.length} ${scopeLabel} iniciadas${nextIndex === targets.length ? ' · pronto para salvar' : ''}`;
@@ -3255,9 +3704,9 @@ function updateManualSyncProgress() {
       ? `<span class="manual-sync-context">${currentLineLabel}</span><span class="manual-sync-target">${manualSyncLineMarkup(lines[targetLine])}</span>${nextLine ? `<span class="manual-sync-upcoming"><small>${nextLineLabel}</small>${manualSyncLineMarkup(nextLine)}</span>` : ''}`
       : 'Todas as linhas selecionadas foram marcadas. Salve para aplicar a sincronia.';
     $('markManualSync').textContent = backingPending
-      ? interfaceLanguage === 'en-US' ? '✓ Mark backing end' : '✓ Marcar fim do backing'
-      : targetLine !== undefined && isBackingLyric(lines[targetLine])
-        ? interfaceLanguage === 'en-US' ? '✓ Mark backing start' : '✓ Marcar início do backing'
+      ? interfaceLanguage === 'en-US' ? '✓ Mark phrase end' : '✓ Marcar fim da frase'
+      : targetLine !== undefined && manualSyncNeedsEnd(lines[targetLine])
+        ? interfaceLanguage === 'en-US' ? '✓ Mark phrase start' : '✓ Marcar início da frase'
         : manualSyncState.repairOnly
           ? interfaceLanguage === 'en-US' ? '✓ Mark selected line' : '✓ Marcar linha selecionada'
           : interfaceLanguage === 'en-US' ? '✓ Mark phrase start' : '✓ Marcar início da frase';
@@ -3270,13 +3719,14 @@ function updateManualSyncProgress() {
 }
 async function startManualSync() {
   if (manualSyncState) {
-    if (!$('manualSyncText').hidden) { editManualLyrics(); return; }
+    if (!manualSyncEditor().hidden) { editManualLyrics(); return; }
     manualSyncDialog.classList.remove('confirm-discard');
     enterSyncStage(); return;
   }
   if (!current?.buffers?.Inst) { toast('Toque esta música primeiro e aguarde o áudio carregar.'); return; }
-  const sourceLines = current.lyricLines || [];
-  const lines = $('manualSyncText').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  try {flushManualVoiceEditors();}catch(error){toast(error.message);return;}
+  const syncStartPosition=Math.max(0,playbackPosition());
+  const lines = manualEditorLines();
   if (!lines.length) { toast('Cole a letra, com uma linha por frase.'); return; }
   if (lines.length > 500) { toast('Use até 500 linhas por música.'); return; }
   refreshManualSyncLinePicker();
@@ -3289,19 +3739,15 @@ async function startManualSync() {
   const queue = mode === 'word' ? manualSyncWords(lines, manualSyncFocus) : [];
   if (mode === 'word' && !queue.length) { toast('Não encontrei palavras na letra.'); return; }
   if (mode === 'word' && queue.length > 5000) { toast('Use até 5.000 palavras por música.'); return; }
-  let times = [];
-  if (mode === 'word') times = [manualSyncFirstWordStart(queue, lines, sourceLines)];
-  manualSyncState = {mode, focus:manualSyncFocus, lines, queue, times, lineEnds:{}, nextIndex: 0, running: true, finished: false, endTime: null, lineTargets: selectedLineIndices, repairOnly: mode === 'line' && manualSyncRepairEnabled, pendingBackingEnd:false};
+  const times = [];
+  manualSyncState = {mode, focus:manualSyncFocus, lines, queue, times, wordEnds:{}, awaitingStart:mode==='word', lineEnds:{}, nextIndex: 0, running: true, finished: false, endTime: null, lineTargets: selectedLineIndices, repairOnly: mode === 'line' && manualSyncRepairEnabled, pendingBackingEnd:false};
   $('manualSyncLinePicker').hidden = true; $('toggleLineRepair').hidden = true;
   $('manualSyncDialog').querySelector('.manual-sync-modes').hidden = true;
   $('manualSyncFocusRow').querySelectorAll('[data-sync-focus]').forEach(button=>button.disabled=true);
-  $('manualSyncText').value = lines.join('\n');
-  $('manualSyncText').hidden = true; $('manualSyncText').disabled = true; $('editManualLyrics').hidden = false;
+  manualSyncEditor().value = VoxStageLyrics.editorText(manualSyncVoices[manualSyncFocus]);
+  manualSyncEditor().hidden = true; manualSyncEditor().disabled = true; $('manualVoiceEditors').hidden=true; $('editManualLyrics').hidden = false;
   $('startManualSync').hidden = true;
-  const sourceLinesMatch = sourceLines.length === lines.length && lines.every((line,index)=>sourceLines[index]?.text?.trim() === line.trim());
-  const firstTargetStart = sourceLinesMatch ? Number(sourceLines[selectedLineIndices[0]]?.time) / 1000 : NaN;
-  const firstSelectedTime = manualSyncMode === 'word' ? times[0] || 0 : Number.isFinite(firstTargetStart) ? firstTargetStart : 0;
-  playbackBase = Math.max(0, firstSelectedTime - 2);
+  playbackBase=syncStartPosition;
   startAudioSources(playbackBase); enterSyncStage();
 }
 async function startCensorSync() {
@@ -3311,7 +3757,7 @@ async function startCensorSync() {
   try { if (audioContext?.state==='suspended') await audioContext.resume(); } catch {}
   const queue=[...marks].sort((a,b)=>Number(current.lyricLines[a.lineIndex].time)-Number(current.lyricLines[b.lineIndex].time)||a.wordIndex-b.wordIndex);
   manualSyncState={mode:'censor',focus:'lead',lines:current.lyricLines.map(line=>line.text),queue,nextIndex:0,pendingStartMs:null,cues:[],running:true,finished:false,stagePreviewKey:null};
-  $('manualSyncText').hidden=true; $('manualSyncText').disabled=true;
+  manualSyncEditor().hidden=true; manualSyncEditor().disabled=true;
   $('startManualSync').hidden=true; $('editManualLyrics').hidden=true;
   $('manualSyncDialog').querySelector('.manual-sync-modes').hidden=true;
   $('manualSyncFocusRow').hidden=true; $('toggleLineRepair').hidden=true; $('manualSyncLinePicker').hidden=true;
@@ -3330,7 +3776,7 @@ async function saveCensorSync() {
     try { await api('/api/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(song)}); }
     catch(error) { console.error('Falha ao salvar censura',error); toast('Não consegui salvar a censura. As marcações continuam abertas.'); return; }
   }
-  current.profanityCues=cues; current.playbackTracks=null;
+  current.profanityCues=cues; current.playbackTracks=null;manualSyncReturn=null;
   $('closeManualSync').click();
   toast(`${state.cues.length} intervalo${state.cues.length===1?'':'s'} de censura salvo${state.cues.length===1?'':'s'}.`);
 }
@@ -3352,9 +3798,9 @@ function markManualSyncLine() {
   if (!manualSyncState?.running || (manualSyncState.nextIndex >= (manualSyncState.lineTargets?.length ?? manualSyncState.lines.length) && !manualSyncState.pendingBackingEnd)) return;
   if (!playing) { toast(interfaceLanguage === 'en-US' ? 'Press Play before marking the next line.' : 'Dê play antes de marcar a próxima linha.'); return; }
   const time = playbackPosition();
-  const previous = manualSyncState.times.at(-1) ?? -1;
-  if (time <= previous) { toast('Espere a próxima linha chegar antes de marcar.'); return; }
   const targets = manualSyncState.lineTargets || manualSyncState.lines.map((_, index) => index);
+  const previous = manualSyncState.pendingBackingEnd ? manualSyncState.times.at(-1) : manualSyncState.lineEnds[targets[manualSyncState.nextIndex-1]] ?? -1;
+  if (time <= previous) { toast('Espere a próxima linha chegar antes de marcar.'); return; }
   const lineIndex = targets[manualSyncState.nextIndex];
   if (manualSyncState.pendingBackingEnd) {
     manualSyncState.lineEnds[lineIndex] = time;
@@ -3362,9 +3808,9 @@ function markManualSyncLine() {
     manualSyncState.nextIndex++;
   } else {
     manualSyncState.times.push(time);
-    if (isBackingLyric(manualSyncState.lines[lineIndex])) manualSyncState.pendingBackingEnd = true;
-    else manualSyncState.nextIndex++;
+    manualSyncState.pendingBackingEnd = true;
   }
+  if(manualSyncState.nextIndex>=targets.length&&!manualSyncState.pendingBackingEnd){manualSyncState.running=false;manualSyncState.finished=true;}
   updateManualSyncProgress();
 }
 function markManualSyncInput() {
@@ -3376,14 +3822,21 @@ function markManualSyncInput() {
 function markManualSyncWordBoundary() {
   if (!manualSyncState?.running) return;
   if (!playing) { toast(interfaceLanguage === 'en-US' ? 'Press Play before marking the next word.' : 'Dê play antes de marcar a próxima palavra.'); return; }
-  const state = manualSyncState, time = playbackPosition(), cursor = state.nextIndex;
-  const wordStart = state.times[cursor];
-  if (time <= wordStart) { toast('Deixe a palavra exibida tocar até o fim antes de avançar.'); return; }
-  if (cursor >= state.queue.length - 1) {
-    state.endTime = time; state.finished = true; state.running = false;
+  const state=manualSyncState,time=playbackPosition(),cursor=state.nextIndex;
+  state.wordEnds ||= {};
+  if(state.awaitingStart) {
+    if(!Number.isFinite(time)||time<0||cursor>0&&time<=state.wordEnds[cursor-1]){toast('Avance para depois do fim da frase anterior.');return;}
+    state.times[cursor]=time;state.awaitingStart=false;
   } else {
-    state.times[cursor + 1] = time;
-    state.nextIndex++;
+    const wordStart=state.times[cursor];
+    if(!Number.isFinite(wordStart)||time<=wordStart){toast('Deixe a palavra exibida tocar até o fim antes de avançar.');return;}
+    state.wordEnds[cursor]=time;
+    if(cursor>=state.queue.length-1){state.endTime=time;state.finished=true;state.running=false;}
+    else {
+      state.nextIndex++;
+      if(state.queue[state.nextIndex].breakBefore)state.awaitingStart=true;
+      else state.times[state.nextIndex]=time;
+    }
   }
   updateManualSyncProgress();
 }
@@ -3400,37 +3853,46 @@ function undoManualSyncLine() {
     updateManualSyncProgress(); return;
   }
   if (!manualSyncState?.times.length) return;
-  const returnTo = manualSyncState.mode === 'word' && manualSyncState.finished
-    ? manualSyncState.times.at(-1) : manualSyncState.times.at(-1);
-  pausePlayback();
-  playbackBase = Math.max(0, returnTo - 1);
-  if (manualSyncState.mode === 'word') {
-    if (manualSyncState.finished) { manualSyncState.finished = false; manualSyncState.running = true; manualSyncState.endTime = null; }
-    else if (manualSyncState.nextIndex > 0) { manualSyncState.times.pop(); manualSyncState.nextIndex--; }
-    updateManualSyncProgress(); return;
+  if(manualSyncState.mode==='word') {
+    const state=manualSyncState;state.wordEnds ||= {};
+    let returnTo=state.times.at(-1);
+    if(state.finished){state.finished=false;state.running=true;state.endTime=null;delete state.wordEnds[state.nextIndex];}
+    else if(state.awaitingStart&&state.nextIndex>0){state.nextIndex--;state.awaitingStart=false;delete state.wordEnds[state.nextIndex];}
+    else if(state.nextIndex===0){state.times=[];state.awaitingStart=true;}
+    else if(state.nextIndex>0){
+      state.times.pop();
+      if(state.queue[state.nextIndex].breakBefore)state.awaitingStart=true;
+      else {state.nextIndex--;delete state.wordEnds[state.nextIndex];}
+    }
+    pausePlayback();playbackBase=Math.max(0,returnTo-1);updateManualSyncProgress();return;
   }
+  const returnTo=manualSyncState.times.at(-1);
+  pausePlayback();playbackBase=Math.max(0,returnTo-1);
   const targets = manualSyncState.lineTargets || manualSyncState.lines.map((_, index) => index);
-  if (manualSyncState.pendingBackingEnd) {
-    manualSyncState.times.pop(); manualSyncState.pendingBackingEnd = false;
-  } else if (manualSyncState.nextIndex > 0) {
-    const previousLine = targets[manualSyncState.nextIndex - 1];
-    delete manualSyncState.lineEnds[previousLine];
-    manualSyncState.times.pop(); manualSyncState.nextIndex--;
-    if (isBackingLyric(manualSyncState.lines[previousLine])) manualSyncState.pendingBackingEnd = false;
+  manualSyncState.running=true;manualSyncState.finished=false;
+  if(manualSyncState.pendingBackingEnd){
+    manualSyncState.times.pop();manualSyncState.pendingBackingEnd=false;
+  }else if(manualSyncState.nextIndex>0){
+    manualSyncState.nextIndex--;
+    delete manualSyncState.lineEnds[targets[manualSyncState.nextIndex]];
+    manualSyncState.pendingBackingEnd=true;
   }
   updateManualSyncProgress();
 }
 function editManualLyrics() {
-  const editor = $('manualSyncText'), button = $('editManualLyrics');
+  let editor = manualSyncEditor();const button = $('editManualLyrics');
   if (editor.hidden) {
     pausePlayback();
     manualSyncDialog.classList.add('show');
     manualSyncDialog.classList.remove('confirm-discard');
     $('startManualSync').hidden = true;
-    editor.hidden = false; editor.disabled = false; button.textContent = 'Aplicar letra'; editor.focus();
+    restoreManualVoiceEditors();setManualSyncFocus(manualSyncFocus);editor.focus({preventScroll:true});
     return;
   }
-  const lines = editor.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  // Editing another tab never changes the recording track. Return to its own
+  // editor before remapping any words or line boundaries.
+  if(manualSyncState&&manualSyncFocus!==manualSyncState.focus){setManualSyncFocus(manualSyncState.focus);editor=manualSyncEditor();}
+  const lines = manualEditorLines();
   if (!lines.length) { toast('A letra precisa ter pelo menos uma linha.'); editor.focus(); return; }
   if (lines.length > 500) { toast('Use até 500 linhas por música.'); editor.focus(); return; }
   if (manualSyncState) {
@@ -3459,43 +3921,44 @@ function editManualLyrics() {
         if (!started.has(target)) break;
         remappedTimes.push(started.get(target));
       }
-      const oldPendingLine = state.pendingBackingEnd ? oldTargets[state.nextIndex] : undefined;
-      const newPendingLine = oldPendingLine === undefined ? undefined : oldToNew.get(oldPendingLine);
-      const pendingBackingEnd = newPendingLine !== undefined && newTargets[remappedTimes.length] === newPendingLine && isBackingLyric(lines[newPendingLine]);
-      if (pendingBackingEnd && started.has(newPendingLine)) remappedTimes.push(started.get(newPendingLine));
-      const preserved = new Set(newTargets.slice(0, remappedTimes.length));
-      state.lineTargets = newTargets;
-      state.times = remappedTimes;
-      state.nextIndex = pendingBackingEnd ? remappedTimes.length - 1 : remappedTimes.length;
-      state.pendingBackingEnd = pendingBackingEnd;
-      state.lineEnds = Object.fromEntries(Object.entries(remappedEnds).filter(([index])=>preserved.has(Number(index))));
-      state.running = state.nextIndex < newTargets.length || pendingBackingEnd;
-      state.finished = false;
+      state.lineTargets=newTargets;state.times=remappedTimes;
+      state.lineEnds=Object.fromEntries(Object.entries(remappedEnds).filter(([index,end])=>{
+        const position=newTargets.indexOf(Number(index)),start=remappedTimes[position];
+        return position>=0&&Number.isFinite(start)&&Number.isFinite(end)&&end>start;
+      }));
+      state.nextIndex=0;
+      while(state.nextIndex<state.times.length&&state.lineEnds[newTargets[state.nextIndex]]!=null)state.nextIndex++;
+      state.pendingBackingEnd=state.nextIndex<state.times.length;
+      state.times=state.times.slice(0,state.nextIndex+(state.pendingBackingEnd?1:0));
+      const completed=new Set(newTargets.slice(0,state.nextIndex));
+      state.lineEnds=Object.fromEntries(Object.entries(state.lineEnds).filter(([index])=>completed.has(Number(index))));
+      state.running=state.nextIndex<newTargets.length;state.finished=!state.running;
     } else {
       const oldQueue = state.queue, oldTimes = state.times;
-      const newQueue = manualSyncWords(lines, state.focus), mappedStarts = new Map(), occurrence = new Map();
+      const newQueue = manualSyncWords(lines, state.focus), mappedStarts = new Map(), mappedEnds = new Map(), wordMaps = new Map();
       oldQueue.forEach((entry, oldIndex) => {
         if (!Number.isFinite(Number(oldTimes[oldIndex]))) return;
         const newLineIndex = oldToNew.get(entry.lineIndex);
         if (newLineIndex === undefined) return;
-        const token = `${newLineIndex}|${entry.parallel ? 1 : 0}|${lyricTokenKey(entry.word)}`;
-        const ordinal = occurrence.get(token) || 0; occurrence.set(token, ordinal + 1);
-        const match = newQueue.filter(candidate=>candidate.lineIndex===newLineIndex && candidate.parallel===entry.parallel && lyricTokenKey(candidate.word)===lyricTokenKey(entry.word))[ordinal];
-        if (match) mappedStarts.set(newQueue.indexOf(match), oldTimes[oldIndex]);
+        if(!wordMaps.has(entry.lineIndex))wordMaps.set(entry.lineIndex,new Map(VoxStageLyrics.match(lyricWordEntries(oldLines[entry.lineIndex]).map(item=>lyricTokenKey(item.word)),lyricWordEntries(lines[newLineIndex]).map(item=>lyricTokenKey(item.word)))));
+        const newWordIndex=wordMaps.get(entry.lineIndex).get(entry.wordIndex);
+        const match=newQueue.find(candidate=>candidate.lineIndex===newLineIndex&&candidate.wordIndex===newWordIndex&&candidate.parallel===entry.parallel);
+        if(match){const next=newQueue.indexOf(match);mappedStarts.set(next,oldTimes[oldIndex]);if(Number.isFinite(state.wordEnds?.[oldIndex]))mappedEnds.set(next,state.wordEnds[oldIndex]);}
       });
       state.queue = newQueue;
       state.times = [];
       for (let index = 0; index < newQueue.length && mappedStarts.has(index); index++) state.times.push(mappedStarts.get(index));
-      if (!state.times.length && newQueue.length) state.times = [manualSyncFirstWordStart(newQueue, lines, current.lyricLines || [])];
       state.finished = false; state.endTime = null; state.running = true;
-      state.nextIndex = Math.max(0, state.times.length - 1);
+      state.wordEnds=Object.fromEntries([...mappedEnds].filter(([index])=>index<state.times.length));
+      state.awaitingStart=state.times.length===0||state.times.length<newQueue.length&&newQueue[state.times.length]?.breakBefore&&Number.isFinite(state.wordEnds[state.times.length-1]);
+      state.nextIndex=state.awaitingStart?state.times.length:Math.max(0,state.times.length-1);
     }
     refreshManualSyncLinePicker();
     updateManualSyncProgress();
   } else {
-    editor.value = lines.join('\n');
+    editor.value = VoxStageLyrics.editorText(VoxStageLyrics.textRows(editor.value));
   }
-  editor.hidden = true; editor.disabled = true; button.textContent = '✎ Editar letra';
+  editor.hidden = true; editor.disabled = true; $('manualVoiceEditors').hidden=true; button.textContent = '✎ Editar letra';
   if (manualSyncState) enterSyncStage();
 }
 function formatLrcTime(seconds) {
@@ -3506,152 +3969,134 @@ function formatLrcTime(seconds) {
 function serializeLrcTrack(lines, secondsByTrackIndex) {
   return lines.flatMap((line,index)=>Number.isFinite(secondsByTrackIndex[index]) ? [`[${formatLrcTime(secondsByTrackIndex[index])}]${line}`] : []).join('\n');
 }
-async function saveManualSync() {
-  if (manualSyncState?.mode === 'censor') { await saveCensorSync(); return; }
-  if (manualSyncState?.mode === 'silence') { manualSilenceStartMs=null; $('closeManualSync').click(); return; }
-  if (!current) return;
-  const typedLines = $('manualSyncText').value.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
-  const state = manualSyncState || {mode:'line',focus:'lead',lines:typedLines,lineTargets:[],times:[],lineEnds:{},nextIndex:0,pendingBackingEnd:false,repairOnly:false,queue:[],finished:false,endTime:null};
-  const lines = (state.lines || typedLines).map(line=>String(line).trim()).filter(Boolean);
-  if (!lines.length) { toast(interfaceLanguage === 'en-US' ? 'Paste the lyrics before saving.' : 'Cole a letra antes de salvar.'); return; }
-  const oldRows = current.lyricLines || [];
-  const oldToNew = mapLyricLineIndices(oldRows.map(line=>line.text), lines, true);
-  const oldForNew = Array(lines.length).fill(-1);
-  for (const [oldIndex,newIndex] of oldToNew) if (oldForNew[newIndex] < 0) oldForNew[newIndex] = oldIndex;
-  const mainDisplay=[], backingDisplay=[], mainIndexByDisplay=new Map(), backingIndexByDisplay=new Map();
-  lines.forEach((line,index)=>{
-    if (isBackingLyric(line)) { backingIndexByDisplay.set(index,backingDisplay.length); backingDisplay.push(index); }
-    else { mainIndexByDisplay.set(index,mainDisplay.length); mainDisplay.push(index); }
+function remapLyricOccurrences(items,oldRows,newRows) {
+  return (items||[]).flatMap(item=>{
+    const oldIndex=Number(item.lineIndex),row=oldRows[oldIndex];if(!row)return [];
+    const entries=lyricWordEntries(row.text),entry=entries[Number(item.wordIndex)];
+    if(!entry||lyricTokenKey(entry.word)!==lyricTokenKey(item.word))return [];
+    const voice=row.voice || (isBackingLyric(row.text)?'backing':entry.parallel?'parallel':'lead');
+    const rowId=row.voiceId || 'legacy-'+voice+'-'+oldIndex;
+    const newIndex=newRows.findIndex(candidate=>candidate.voiceId===rowId);if(newIndex<0)return [];
+    const filtered=entries.filter(candidate=>voice==='backing'||row.voice ? true : voice==='parallel'?candidate.parallel:!candidate.parallel);
+    const localIndex=filtered.indexOf(entry),nextEntries=lyricWordEntries(newRows[newIndex].text);
+    const mapping=new Map(VoxStageLyrics.match(filtered.map(candidate=>lyricTokenKey(candidate.word)),nextEntries.map(candidate=>lyricTokenKey(candidate.word))));
+    const wordIndex=mapping.get(localIndex);if(wordIndex===undefined)return [];
+    return [{...item,lineIndex:newIndex,wordIndex,word:nextEntries[wordIndex].word}];
   });
-  const mainLines=mainDisplay.map(index=>lines[index]), backingLines=backingDisplay.map(index=>lines[index]);
-  const oldTime = index => index >= 0 ? Number(oldRows[index]?.time) / 1000 : NaN;
-  const mainTimes=mainDisplay.map(index=>oldTime(oldForNew[index]));
-  const backingTimes=backingDisplay.map(index=>oldTime(oldForNew[index]));
-  const lyricLineEnds=mainDisplay.map(index=>{const old=oldForNew[index];return old>=0?current.lyricLineEnds?.[old]??null:null;});
-  const backingLineEnds=backingDisplay.map(index=>{const old=oldForNew[index];return old>=0?current.backingLineEnds?.[old]??null:null;});
-  const parallelLineStarts=mainDisplay.map(index=>{const old=oldForNew[index];return old>=0?current.parallelLineStarts?.[old]??null:null;});
-  const cueTracks={lead:current.wordTimings||[],parallel:current.parallelWordTimings||[],backing:current.backingWordTimings||[]};
-  const newCues={lead:new Map(),parallel:new Map(),backing:new Map()};
-  const lineTimeOverrides=new Map();
-  if (state.mode==='word') {
-    const focus=state.focus||'lead', track=focus==='backing'?'backing':focus==='parallel'?'parallel':'lead';
-    (state.queue||[]).forEach((entry,index)=>{
-      const start=Number(state.times[index]);
-      let end=NaN;
-      if (index+1 < state.times.length) end=Number(state.times[index+1]);
-      else if (state.finished && index===state.queue.length-1) end=Number(state.endTime);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
-      const words=newCues[track].get(entry.lineIndex)||[];
-      words.push({word:entry.word,start,end});
-      newCues[track].set(entry.lineIndex,words);
-    });
-    const display=track==='backing'?backingDisplay:mainDisplay, times=track==='backing'?backingTimes:mainTimes;
-    for (const displayIndex of display) {
-      const words=newCues[track].get(displayIndex);
-      if (!words?.length) continue;
-      const trackIndex=track==='backing'?backingIndexByDisplay.get(displayIndex):mainIndexByDisplay.get(displayIndex);
-      const first=Math.min(...words.map(word=>word.start)), last=Math.max(...words.map(word=>word.end));
-      if (!Number.isFinite(times[trackIndex])) times[trackIndex]=first;
-      if (track==='parallel') parallelLineStarts[trackIndex]=Math.round(first*1000);
-      if (track==='backing') backingLineEnds[trackIndex]=Math.round(last*1000);
-    }
-  } else {
-    const targets=state.lineTargets||[];
-    targets.forEach((displayIndex,markIndex)=>{
-      const time=Number(state.times[markIndex]);
-      if (!Number.isFinite(time)) return;
-      const oldIndex=oldForNew[displayIndex], track=state.focus||'lead';
-      const trackIndex=track==='backing'?backingIndexByDisplay.get(displayIndex):mainIndexByDisplay.get(displayIndex);
-      if (trackIndex===undefined) return;
-      let oldStart=oldTime(oldIndex);
-      if (track==='parallel' && oldIndex>=0 && current.parallelLineStarts?.[oldIndex]!=null && Number.isFinite(Number(current.parallelLineStarts[oldIndex]))) oldStart=Number(current.parallelLineStarts[oldIndex])/1000;
-      if (track==='backing') {
-        backingTimes[trackIndex]=time;
-        if (state.lineEnds?.[displayIndex]!==undefined) backingLineEnds[trackIndex]=Math.round(state.lineEnds[displayIndex]*1000);
-      } else if (track==='parallel') parallelLineStarts[trackIndex]=Math.round(time*1000);
-      else mainTimes[trackIndex]=time;
-      if (Number.isFinite(oldStart)) lineTimeOverrides.set(displayIndex,{track,delta:time-oldStart});
-    });
-  }
-  const compactTimed = (display,times) => display.filter((_,index)=>Number.isFinite(times[index]));
-  const mainTimedDisplay=compactTimed(mainDisplay,mainTimes), backingTimedDisplay=compactTimed(backingDisplay,backingTimes);
-  const mainCompactIndex=new Map(mainTimedDisplay.map((displayIndex,index)=>[displayIndex,index]));
-  const backingCompactIndex=new Map(backingTimedDisplay.map((displayIndex,index)=>[displayIndex,index]));
-  const tokenCounts = (line,track) => {
-    const result=new Map();
-    for (const entry of lyricWordEntries(line)) {
-      if (track==='parallel' && !entry.parallel) continue;
-      const key=`${track==='parallel'?1:0}|${lyricTokenKey(entry.word)}`;
-      result.set(key,(result.get(key)||0)+1);
-    }
-    return result;
-  };
-  const toStoredCues=(track,displayRows)=>{
-    const sourceCues=cueTracks[track]||[], replaceMap=newCues[track];
-    const compact=track==='backing'?backingCompactIndex:mainCompactIndex;
-    return displayRows.flatMap(displayIndex=>{
-      const compactIndex=compact.get(displayIndex);
-      if (compactIndex===undefined) return [];
-      const oldIndex=oldForNew[displayIndex];
-      let words=replaceMap.has(displayIndex)
-        ? replaceMap.get(displayIndex).map(word=>({...word}))
-        : oldIndex>=0 ? sourceCues.find(item=>Number(item.lineIndex)===oldIndex)?.words?.map(word=>({...word}))||[] : [];
-      const remaining=tokenCounts(lines[displayIndex],track);
-      words=words.filter(word=>{
-        const key=`${track==='parallel'?1:0}|${lyricTokenKey(word.word)}`, count=remaining.get(key)||0;
-        if (!count) return false;
-        remaining.set(key,count-1); return true;
-      });
-      const shift=lineTimeOverrides.get(displayIndex);
-      if (shift && shift.track===track) words.forEach(word=>{word.start=Number(word.start)+shift.delta;word.end=Number(word.end)+shift.delta;});
-      return words.length ? [{lineIndex:compactIndex,words:words.sort((a,b)=>Number(a.start)-Number(b.start))}] : [];
-    });
-  };
-  const rawLeadWordTimings=toStoredCues('lead',mainTimedDisplay);
-  const rawParallelWordTimings=toStoredCues('parallel',mainTimedDisplay);
-  const rawBackingWordTimings=toStoredCues('backing',backingTimedDisplay);
-  const syncedLyrics=serializeLrcTrack(mainTimedDisplay.map(index=>lines[index]),mainTimedDisplay.map(index=>mainTimes[mainIndexByDisplay.get(index)]));
-  const backingSyncedLyrics=serializeLrcTrack(backingTimedDisplay.map(index=>lines[index]),backingTimedDisplay.map(index=>backingTimes[backingIndexByDisplay.get(index)]));
-  const rawMainEnds=mainTimedDisplay.map(index=>lyricLineEnds[mainIndexByDisplay.get(index)]??null);
-  const rawBackingEnds=backingTimedDisplay.map(index=>backingLineEnds[backingIndexByDisplay.get(index)]??null);
-  const rawParallelStarts=mainTimedDisplay.map(index=>{
-    const value=parallelLineStarts[mainIndexByDisplay.get(index)];
-    return value!=null&&Number.isFinite(Number(value))?Math.round(Number(value)):null;
-  });
-  const lyricAdjustments={...(current.lyricAdjustments||{})};
-  if ((state.focus||'lead')==='lead') (state.lineTargets||[]).forEach(index=>{delete lyricAdjustments[String(index)];});
-  const savedMode=state.mode, savedFocus=state.focus||'lead';
-  const selection={
-    syncedLyrics,plainLyrics:mainLines.join('\n'),
-    backingSyncedLyrics,backingPlainLyrics:backingLines.join('\n'),
-    lyricTrack:current.lyricTrack||current.title,lyricArtist:current.lyricArtist||current.artist||'',
-    lyricProvider:savedMode==='word'?'VoxStage · manual (palavra por palavra)':current.lyricProvider||'VoxStage · manual',
-    wordTimings:rawLeadWordTimings,parallelWordTimings:rawParallelWordTimings,backingWordTimings:rawBackingWordTimings,
-    lyricLineEnds:rawMainEnds,backingLineEnds:rawBackingEnds,parallelLineStarts:rawParallelStarts,lyricAdjustments
-  };
-  if (savedMode==='word' && Object.values(newCues).some(map=>map.size)) current.wordByWordEnabled=true;
-  Object.assign(current,selection);
-  const unified=unifiedLyricsForSong(current);
-  Object.assign(current,{syncedLyrics:unified.syncedLyrics,plainLyrics:unified.plainLyrics,wordTimings:unified.wordTimings,parallelWordTimings:unified.parallelWordTimings,backingWordTimings:unified.backingWordTimings,lyricLineEnds:unified.lyricLineEnds,backingLineEnds:unified.backingLineEnds,parallelLineStarts:unified.parallelLineStarts,lyricLines:unified.lyricLines,lyricIndex:null,vocalSilenceEnds:[],vocalSilenceState:null});
-  updateLyrics(playbackPosition());
-  const song=songs.find(item=>item.id===current.id);
-  if (song) {
-    Object.assign(song,selection);
-    try { await api('/api/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(song)}); }
-    catch(error) { console.error('Falha ao salvar a sincronização manual',error); toast(interfaceLanguage==='en-US'?'Could not save. Your lyrics and marks remain open; try again.':'Não consegui salvar. Suas letras e marcações continuam abertas; tente novamente.'); return; }
-  }
-  const hasTiming=mainTimedDisplay.length+backingTimedDisplay.length>0;
-  const targets=state.lineTargets||[];
-  const wasPartial=Boolean(state.repairOnly || state.pendingBackingEnd || (state.mode==='word'&&!state.finished) || (state.mode==='line'&&state.nextIndex<targets.length));
-  const markedCount=savedMode==='word'?[...rawLeadWordTimings,...rawParallelWordTimings,...rawBackingWordTimings].reduce((sum,line)=>sum+line.words.length,0):targets.length;
-  leaveSyncStage(); manualSyncDialog.classList.remove('show','recording','confirm-discard'); manualSyncDialog.querySelector('.manual-sync-card header').append($('closeManualSync')); manualSyncState=null; setManualSyncFocus(manualSyncFocus); $('manualSyncText').hidden=false; $('manualSyncText').disabled=false; $('editManualLyrics').hidden=true; $('startManualSync').hidden=false; $('startManualSync').disabled=false; $('manualSyncDialog').querySelector('.manual-sync-modes').hidden=false;
-  if (current) { current.lyricIndex=null; updateLyrics(playbackPosition()); }
-  if (!hasTiming) { lyricStatus(interfaceLanguage==='en-US'?'Lyrics saved without timing.':'Letra salva sem sincronização.'); toast(interfaceLanguage==='en-US'?'Lyrics saved without sync.':'Letra salva sem sincronização.'); }
-  else if (wasPartial) { lyricStatus(interfaceLanguage==='en-US'?'Partial lyric sync saved.':'Sincronização parcial salva.'); toast(interfaceLanguage==='en-US'?`Partial sync saved · ${markedCount} marks`:`Sync parcial salvo · ${markedCount} marcações`); }
-  else { lyricStatus(interfaceLanguage==='en-US'?'Manual lyric sync saved.':'Sincronização manual salva.'); toast(interfaceLanguage==='en-US'?'Sync saved.':'Sync salvo.'); }
-  updateManualSaveButton();
 }
-$('closeManualSync').onclick = () => { leaveSyncStage(); manualSyncDialog.classList.remove('show', 'recording', 'confirm-discard'); manualSyncDialog.querySelector('.manual-sync-card header').append($('closeManualSync')); manualSyncState = null; manualSilenceStartMs = null; updateManualSilenceControls(); setManualSyncFocus(manualSyncFocus); $('manualSyncText').hidden = false; $('manualSyncText').disabled = false; $('editManualLyrics').hidden = true; $('startManualSync').hidden = false; $('startManualSync').disabled = false; $('manualSyncDialog').querySelector('.manual-sync-modes').hidden = false; if (current) { current.lyricIndex = null; updateLyrics(playbackPosition()); } };
+async function saveOtherManualVoice() {
+  const state=manualSyncState,voice=manualSyncFocus,songId=current?.id;
+  if(!state||!['line','word'].includes(state.mode)||voice===state.focus||!songId||manualVoiceSavePending)return;
+  const text=manualSyncEditor(voice).value;
+  if(text.split(/\r?\n/).filter(line=>line.trim()).length>500||VoxStageLyrics.words(text).length>5000){toast('Use até 500 linhas e 5.000 palavras por voz.');return;}
+  const voices=VoxStageLyrics.fromLegacy(current,current.lyricLines?current:unifiedLyricsForSong(current),lyricWordEntries);
+  voices[voice]=VoxStageLyrics.reconcile(voices[voice],text,voice);
+  const projected=VoxStageLyrics.project(voices),oldRows=current.lyricLines||[];
+  const selection={...VoxStageLyrics.storage(voices),lyricAdjustments:projected.lyricAdjustments,
+    profanityMarks:remapLyricOccurrences(current.profanityMarks,oldRows,projected.lyricLines),
+    profanityCues:remapLyricOccurrences(current.profanityCues,oldRows,projected.lyricLines)};
+  const song=songs.find(item=>item.id===songId);
+  manualVoiceSavePending=true;updateManualSaveButton();
+  try{
+    if(!song)throw new Error('Música não encontrada na biblioteca.');
+    await api('/api/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...song,...selection})});
+    Object.assign(song,selection);
+    if(current?.id!==songId)return;
+    Object.assign(current,selection,projected,{lyricIndex:null,playbackTracks:null,vocalSilenceEnds:[],vocalSilenceState:null});
+    if(manualSyncState===state)manualSyncVoices[voice]=structuredClone(voices[voice]);
+    if(!manualSyncState)updateLyrics(playbackPosition());
+    toast(interfaceLanguage==='en-US'?syncFocusLabel(voice)+' saved. Your sync is still open.':'Letra salva · '+syncFocusLabel(voice)+'. O sync continua aberto.');
+  }catch(error){
+    console.error('Falha ao salvar a letra de outra voz',error);
+    toast(interfaceLanguage==='en-US'?'Could not save. Your lyrics and timing marks are still here.':'Não consegui salvar. A letra e as marcações continuam aqui para tentar novamente.');
+  }finally{manualVoiceSavePending=false;updateManualSaveButton();}
+}
+async function saveManualSync() {
+  if(manualVoiceSavePending)return;
+  if(manualSyncState&&['line','word'].includes(manualSyncState.mode)&&manualSyncDialog.classList.contains('show')){
+    if(manualSyncFocus!==manualSyncState.focus)await saveOtherManualVoice();
+    return;
+  }
+  if(manualSyncState?.mode==='censor'){await saveCensorSync();return;}
+  if(manualSyncState?.mode==='silence'){manualSilenceStartMs=null;manualSyncReturn=null;$('closeManualSync').click();return;}
+  if(!current||!manualSyncVoices)return;
+  try {flushManualVoiceEditors();}catch(error){toast(error.message);return;}
+  const state=manualSyncState,voice=state?.focus||manualSyncFocus;
+  const voices=VoxStageLyrics.normalize(manualSyncVoices),rows=voices[voice];
+  if(state?.mode==='word') {
+    const replacements=new Map();
+    state.queue.forEach((entry,index)=>{
+      const start=state.times[index],end=state.wordEnds?.[index]??(index+1<state.times.length?state.times[index+1]:state.finished&&index===state.queue.length-1?state.endTime:null);
+      if(start==null||end==null||!Number.isFinite(Number(start))||!Number.isFinite(Number(end))||Number(end)<=Number(start))return;
+      if(!replacements.has(entry.lineIndex))replacements.set(entry.lineIndex,new Map());
+      replacements.get(entry.lineIndex).set(entry.wordIndex,{word:entry.word,index:entry.wordIndex,start:Number(start),end:Number(end)});
+    });
+    for(const [index,cues] of replacements) {
+      const row=rows[index];if(!row)continue;
+      const saved=VoxStageLyrics.cuePositions(row);
+      for(const [wordIndex,cue] of cues)saved.set(wordIndex,cue);
+      row.words=[...saved.values()].sort((a,b)=>a.index-b.index);
+      const first=row.activeWordIndices?.[0]??0,last=row.activeWordIndices?.at(-1)??VoxStageLyrics.words(row.text).length-1;
+      if(cues.has(first))row.time=cues.get(first).start*1000;
+      else if(row.time==null)row.time=Math.min(...row.words.map(cue=>cue.start))*1000;
+      if(cues.has(last))row.end=cues.get(last).end*1000;
+      delete row.adjustment;
+    }
+  } else if(state?.mode==='line') {
+    (state.lineTargets||[]).forEach((index,markIndex)=>{
+      const row=rows[index],start=state.times[markIndex];
+      if(!row||start==null||!Number.isFinite(Number(start)))return;
+      const previous=row.time,delta=previous==null?0:Number(start)-previous/1000;
+      row.time=Number(start)*1000;
+      if(state.lineEnds?.[index]!=null)row.end=Number(state.lineEnds[index])*1000;
+      else if(row.end!=null)row.end+=delta*1000;
+      row.words=row.words.map(cue=>({...cue,start:cue.start+delta,end:cue.end+delta}));
+      delete row.adjustment;
+    });
+  }
+  const projected=VoxStageLyrics.project(voices),oldRows=current.lyricLines||[];
+  const selection={...VoxStageLyrics.storage(voices),lyricAdjustments:projected.lyricAdjustments,
+    lyricTrack:current.lyricTrack||current.title,lyricArtist:current.lyricArtist||current.artist||'',
+    lyricProvider:state?.mode==='word'?'VoxStage · manual (palavra por palavra)':current.lyricProvider||'VoxStage · manual',
+    profanityMarks:remapLyricOccurrences(current.profanityMarks,oldRows,projected.lyricLines),
+    profanityCues:remapLyricOccurrences(current.profanityCues,oldRows,projected.lyricLines)};
+  if(state?.mode==='word')selection.wordByWordEnabled=true;
+  const song=songs.find(item=>item.id===current.id),songId=current.id;
+  $('saveManualSync').disabled=true;
+  try {
+    if(song) {
+      await api('/api/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...song,...selection})});
+      Object.assign(song,selection);
+    }
+  } catch(error) {
+    console.error('Falha ao salvar as vozes',error);toast('Não consegui salvar. As letras e marcações continuam abertas para tentar novamente.');updateManualSaveButton();return;
+  }
+  if(current?.id!==songId)return;
+  Object.assign(current,selection,projected,{lyricIndex:null,playbackTracks:null,vocalSilenceEnds:[],vocalSilenceState:null});
+  manualSyncVoices=voices;manualSyncReturn=null;
+  $('closeManualSync').click();
+  lyricStatus('Letras e sincronização salvas.');
+  toast('Letras e tempos salvos. As outras vozes mantêm sua sincronização.');
+}
+$('closeManualSync').onclick = () => {
+  const returnTo=manualSyncState&&manualSyncReturn?.songId===current?.id?manualSyncReturn:null;
+  leaveSyncStage();manualSyncDialog.classList.remove('show','recording','confirm-discard');
+  manualSyncDialog.querySelector('.manual-sync-card header').append($('closeManualSync'));
+  manualSyncState=null;manualSyncReturn=null;restoreManualVoiceEditors();manualSilenceStartMs=null;
+  updateManualSilenceControls();setManualSyncFocus(manualSyncFocus);
+  manualSyncEditor().hidden=false;manualSyncEditor().disabled=false;$('editManualLyrics').hidden=true;$('editManualLyrics').textContent='✎ Editar letra';
+  $('startManualSync').hidden=false;$('startManualSync').disabled=false;
+  manualSyncDialog.querySelector('.manual-sync-modes').hidden=false;
+  if(current){
+    if(returnTo){pausePlayback();playbackBase=returnTo.position;if(returnTo.playing)startAudioSources(playbackBase);}
+    // Preview replaces the lyric DOM. Restore every voice from saved data, even
+    // when playback is paused and no animation frame would rebuild the stage.
+    $('lyrics').replaceChildren();$('lyrics').classList.remove('voices-merged','voices-overlap');
+    current.lyricIndex=null;current.playbackTracks=null;current.vocalSilenceState=null;
+    for(const id of ['lyricWordMarker','lyricParallelWordMarker','lyricBackingWordMarker'])if($(id))$(id).hidden=true;
+    updateLyrics(playbackPosition());
+  }
+};
 manualSyncDialog.addEventListener('click', event => { if (event.target === manualSyncDialog) $('closeManualSync').click(); });
 $('toggleLineRepair').onclick = () => {
   manualSyncRepairEnabled = !manualSyncRepairEnabled;
@@ -3660,14 +4105,18 @@ $('toggleLineRepair').onclick = () => {
   $('toggleLineRepair').setAttribute('aria-expanded', String(manualSyncRepairEnabled));
   $('manualSyncLinePicker').hidden = !manualSyncRepairEnabled;
   $('manualSyncCopy').textContent = manualSyncRepairEnabled
-    ? interfaceLanguage === 'en-US' ? 'Select only the lines that are out of sync. Tap when each phrase begins; backing lines in parentheses need a second tap at the end.' : 'Marque abaixo só as linhas fora de sincronia. Toque quando cada frase começar; backings entre parênteses precisam de outro toque no fim.'
-    : interfaceLanguage === 'en-US' ? 'Follow the lyrics on stage. Tap when each phrase begins. Backing lines in parentheses need a second tap at the end.' : 'Acompanhe a letra no palco. Toque quando cada frase começar. Backings entre parênteses precisam de outro toque no fim.';
+    ? interfaceLanguage === 'en-US' ? 'Select only the lines that are out of sync. Tap at the start of each phrase, then again at its end.' : 'Marque abaixo só as linhas fora de sincronia. Toque no início de cada frase e depois no fim.'
+    : interfaceLanguage === 'en-US' ? 'Follow the lyrics on stage. Tap at the start of each phrase, then again at its end.' : 'Acompanhe a letra no palco. Toque no início de cada frase e depois no fim.';
   if (manualSyncRepairEnabled) refreshManualSyncLinePicker();
 };
-$('manualSyncText').addEventListener('input', () => {
-  if (manualSyncRepairEnabled && !manualSyncState) refreshManualSyncLinePicker();
-  if (!manualSyncState) updateManualSaveButton();
+for(const track of VoxStageLyrics.tracks){
+manualSyncEditor(track).addEventListener('focus',()=>{if(manualSyncFocus!==track)setManualSyncFocus(track);});
+manualSyncEditor(track).addEventListener('input',()=>{
+  refreshManualVoicePanels();
+  if(manualSyncRepairEnabled&&!manualSyncState&&track===manualSyncFocus)refreshManualSyncLinePicker();
+  updateManualSaveButton();
 });
+}
 $('manualSyncLinePicker').addEventListener('click', event => {
   if (!event.target.closest('[data-select-all-lines]')) return;
   const inputs = [...$('manualSyncLinePicker').querySelectorAll('input[data-line-id]')];
@@ -3684,8 +4133,7 @@ $('toggleSilenceSync').onclick = startSilenceSync;
 $('startCensorSync').onclick = startCensorSync;
 $('manualSyncDialog').querySelectorAll('[data-sync-mode]').forEach(button => button.onclick = () => setManualSyncMode(button.dataset.syncMode));
 $('manualSyncDialog').querySelectorAll('[data-sync-focus]').forEach(button => button.onclick = () => {
-  setManualSyncFocus(button.dataset.syncFocus);
-  refreshManualSyncLinePicker();
+  if(manualSyncFocus!==button.dataset.syncFocus)setManualSyncFocus(button.dataset.syncFocus);
 });
 document.querySelector('.display-content').addEventListener('click', event => {
   if (!manualSyncState?.running || manualSyncDialog.classList.contains('show') || event.target.closest('button,input,a')) return;
@@ -3781,7 +4229,7 @@ wordSyncToggle.onclick = async () => {
   }
 };
 displayBottom.replaceChildren(waveformRow, transportRow, settingsRow);
-if (mobileNative) {
+if (mobileNative || presentationDevice!=='pc') {
   const mixButton = document.createElement('button');
   mixButton.id = 'mobileMixToggle'; mixButton.type = 'button'; mixButton.className = 'hud-btn';
   mixButton.textContent = '♫'; mixButton.title = 'Volumes e palavra por palavra';
@@ -3815,9 +4263,9 @@ function setStageControlsHidden(collapsed) {
 };
 // Hidden transport remains usable by touch, including lyrics moved into the lane.
 display.addEventListener('click', event => {
-  if (!mobileNative || androidTv || manualSyncState || display.classList.contains('sync-editing') || !event.target.closest('#lyrics,#scoreLaneLyrics') || event.target.closest('button,input,a')) return;
+  if (presentationDevice!=='phone' || manualSyncState || display.classList.contains('sync-editing') || !event.target.closest('#lyrics,#lyricSecondLine,#scoreLaneLyrics') || event.target.closest('button,input,a')) return;
   if (display.classList.contains('mobile-controls-hidden')) displayPlayButton.click();
-  else setStageControlsHidden(true);
+  else setStageControlsHidden(true,'manual');
 });
 transportRow.append(seekLabel, previousDisplay, displayBack10, displayPlayButton, displayForward10, nextDisplay, displayDuration, lyricsButton, displaySyncButton, displayExit);
 updateSeekStepButtons();
@@ -3839,6 +4287,7 @@ document.addEventListener('fullscreenchange', () => {
 optionsPanel.remove(); $('hamb').remove();
 function navigateSong(direction) {
   const visible = songs.filter(song => !song.hidden);
+  if (sorted) visible.reverse();
   if (!visible.length) return;
   const index = visible.findIndex(song => song.id === current?.id);
   const nextIndex = index < 0 ? 0 : (index + direction + visible.length) % visible.length;
@@ -4016,13 +4465,13 @@ updateSyncEngineUi();
 let mobileStageArtwork = null;
 let stagePerformanceTools = null;
 function setMobileStageArtwork(song) {
-  if (!mobileNative || !mobileStageArtwork) return;
+  if (!mobileStageArtwork) return;
   const cover = song?.cover || '';
   mobileStageArtwork.hidden = !cover;
   if (cover) mobileStageArtwork.src = mediaUrl(cover);
   else mobileStageArtwork.removeAttribute('src');
 }
-if (mobileNative) {
+if (mobileNative || presentationDevice!=='pc') {
   const displayContent = document.querySelector('.display-content');
   mobileStageArtwork = document.createElement('img');
   mobileStageArtwork.id = 'mobileStageArtwork';
@@ -4064,7 +4513,7 @@ if (mobileNative) {
   const updateMobileStageModeButton = () => {
     const tvMode = $('display').classList.contains('mobile-stage-tv');
     const english = interfaceLanguage === 'en-US';
-    if (androidTv) {
+    if (presentationDevice==='tv') {
       const shown = processingSettings.tvShowCover !== false;
       $('display').classList.toggle('tv-cover-visible', shown);
       mobileStageModeButton.innerHTML = `${playbackControlSvg('tv')}<span>${english ? 'Cover' : 'Capa'}: ${shown ? (english ? 'hide' : 'ocultar') : (english ? 'show' : 'exibir')}</span>`;
@@ -4077,7 +4526,7 @@ if (mobileNative) {
     mobileStageModeButton.title = tvMode ? (english ? 'Return to portrait view' : 'Voltar à exibição vertical') : (english ? 'Open landscape full-screen view' : 'Abrir a exibição horizontal em tela cheia');
   };
   mobileStageModeButton.onclick = async () => {
-    if (androidTv) { processingSettings.tvShowCover = processingSettings.tvShowCover === false; localStorage.setItem('voxstage-processing-settings', JSON.stringify(processingSettings)); updateMobileStageModeButton(); return; }
+    if (presentationDevice==='tv') { processingSettings.tvShowCover = processingSettings.tvShowCover === false; localStorage.setItem('voxstage-processing-settings', JSON.stringify(processingSettings)); updateMobileStageModeButton(); return; }
     const tvMode = !$('display').classList.contains('mobile-stage-tv');
     if (tvMode) {
       $('display').classList.add('mobile-stage-tv');
@@ -4105,7 +4554,7 @@ if (mobileNative) {
   };
   updateMobileStageModeButton();
   document.addEventListener('fullscreenchange', () => {
-    if (androidTv) return;
+    if (presentationDevice==='tv') return;
     if (!document.fullscreenElement && $('display').classList.contains('mobile-stage-tv')) {
       $('display').classList.remove('mobile-stage-tv');
       if (mobileNative) { try { window.VoxStageMedia?.setOrientation('portrait'); } catch {} }
@@ -4116,7 +4565,7 @@ if (mobileNative) {
   const leaveDisplayWithOrientation = leaveDisplay;
   $('closeDisplay').onclick = () => {
     leaveDisplayWithOrientation();
-    if (androidTv) { window.dispatchEvent(new Event('voxstage-tv-library')); return; }
+    if (presentationDevice==='tv') { window.dispatchEvent(new Event('voxstage-tv-library')); return; }
     $('display').classList.remove('mobile-stage-tv');
     if (mobileNative) { try { window.VoxStageMedia?.setOrientation('portrait'); } catch {} }
     try { screen.orientation?.unlock?.(); } catch {}
@@ -4219,8 +4668,8 @@ Object.assign(englishUiCopy, {
   'Marcar palavrões':'Mark profanity',
   'Marcar início do backing':'Mark backing start',
   'Marcar fim do backing':'Mark backing end',
-  '✓ Marcar início do backing':'✓ Mark backing start',
-  '✓ Marcar fim do backing':'✓ Mark backing end',
+  '✓ Marcar início da frase':'✓ Mark phrase start',
+  '✓ Marcar fim da frase':'✓ Mark phrase end',
   'Cole sua letra antes de aplicar.':'Paste your lyrics before applying them.',
   'Não consegui reconhecer os timestamps LRC. Confira o formato [mm:ss.xx].':'I could not read those LRC timestamps. Check the [mm:ss.xx] format.',
   'Cole uma frase por linha. Coloque backing vocals entre parênteses.':'Paste one phrase per line. Put backing vocals in parentheses.',
@@ -4260,11 +4709,16 @@ function setAppTheme(name) {
   root.setProperty('--lime', palette.accent);
   root.setProperty('--word-marker', palette.accent);
   root.setProperty('--lyrics-active-color', palette.accent);
+  applyVoiceTheme();
   root.setProperty('--theme-soft', palette.soft);
   root.setProperty('--theme-border', palette.border);
   const selector = $('interfaceTheme'); if (selector) selector.value = interfaceTheme;
   root.setProperty('--lyrics-scale-portrait', String(processingSettings.lyricsScale || 1));
   root.setProperty('--lyrics-scale-tv', String(processingSettings.lyricsScaleTv || 1));
+}
+function applyVoiceTheme() {
+  document.documentElement.style.setProperty('--word-marker-secondary',processingSettings.voice2Color);
+  document.documentElement.classList.toggle('voice-overlap-gradient',processingSettings.voicesOverlapGradient!==false);
 }
 const appThemeStyle = document.createElement('style');
 appThemeStyle.textContent = `.tag,.filter-btn.selected,.word-sync-toggle[aria-pressed=true],.lyrics-badge.synced{background:var(--theme-soft)!important;border-color:var(--theme-border)!important}.lyric-word.active{color:var(--lyrics-active-color)!important;text-shadow:0 0 20px var(--lyrics-active-color)!important}.lyric-word-marker i,.lyric-pause i{background:var(--word-marker)!important;box-shadow:0 0 12px var(--word-marker)}.lyric-pause{color:var(--word-marker)!important}.processing-options label:has(input:checked){border-color:var(--theme-border)!important;background:var(--theme-soft)!important}.lyrics-badge.synced,.tag{color:var(--lime)!important}.filter-btn.selected,.word-sync-toggle[aria-pressed=true]{color:var(--lime)!important}`;
@@ -4277,7 +4731,7 @@ lyricBehaviorStyle.textContent=`.profanity-picker-dialog{z-index:60}.lyric-word.
 document.head.append(lyricBehaviorStyle);
 const uiTextNodes = new WeakMap(), uiAttributeValues = new WeakMap();
 const uiAttributes = ['title','placeholder','aria-label','aria-description','alt'];
-const userSuppliedText = '.track-title,.track-artist,.now-title,.now-sub,#dispTrack,.lyric-current-line,.lyric-word,.manual-sync-context,.manual-sync-current,.manual-sync-picker,.file-name,.youtube-result strong,.youtube-result-artist,.youtube-result-album,.artwork-meta strong,.artwork-meta small';
+const userSuppliedText = '#stageSongTitle,#stageSongArtist,#menuTvTitle,#menuTvArtist,.menu-queue-song,.menu-now-song,.track-title,.track-artist,.now-title,.now-sub,#dispTrack,.lyric-current-line,.lyric-word,.lyric-parallel-phrase,.lyric-backing-line,.second-lyric-word,.profanity-phrase,.manual-sync-context,.manual-sync-current,.manual-sync-picker,.file-name,.youtube-result strong,.youtube-result-artist,.youtube-result-album,.artwork-meta strong,.artwork-meta small';
 Object.assign(englishUiCopy, {
   'VOXSTAGE · CONFIGURAÇÃO INICIAL':'VOXSTAGE · FIRST-TIME SETUP',
   'Prepare os recursos opcionais':'Set up optional features',
@@ -4435,6 +4889,7 @@ function translateUiNode(node) {
   if (!parent || parent.closest('script,style,textarea,[contenteditable="true"]') || parent.closest(userSuppliedText)) return;
   const previous = uiTextNodes.get(node);
   const source = previous && node.nodeValue === previous.output ? previous.source : node.nodeValue;
+  if(!source.trim())return;
   const leading = source.match(/^\s*/)?.[0] || '', trailing = source.match(/\s*$/)?.[0] || '';
   const core = source.slice(leading.length, source.length - trailing.length);
   const output = translateUiCopy(core);
@@ -4539,10 +4994,15 @@ wordMarkerStyle.textContent = `.lyric-word.active:before{content:none!important}
 document.head.append(wordMarkerStyle);
 const layeredVocalStyle = document.createElement('style');
 layeredVocalStyle.textContent = `.lyric-parallel-phrase,.lyric-word.parallel-vocal{color:var(--word-marker-secondary,#ff79c8)}.lyric-word.parallel-vocal.active{color:var(--word-marker-secondary,#ff79c8)!important;text-shadow:0 0 20px var(--word-marker-secondary,#ff79c8)!important}.lyric-word-marker.parallel{transform:translate(calc(-50% + 15px),calc(-100% - 3px))}.lyric-word-marker.parallel i{background:var(--word-marker-secondary,#ff79c8)!important;box-shadow:0 0 12px var(--word-marker-secondary,#ff79c8)!important}.lyric-word-marker.backing{transform:translate(calc(-50% + 9px),-100%)}.lyric-word-marker.backing i{background:#b9a0ff!important;box-shadow:0 0 12px #b9a0ff!important}.lyric-backing-line .backing-lyric-word.active{color:#b9a0ff!important;text-shadow:0 0 14px #b9a0ff!important}.lyric-word.parallel-vocal.upcoming{text-decoration-color:var(--word-marker-secondary,#ff79c8)!important}`;
-layeredVocalStyle.textContent += `.lyric-word-marker.paired:not(.parallel){transform:translate(calc(-50% - 10px),-100%)}.lyric-word-marker.parallel.paired{transform:translate(calc(-50% + 10px),calc(-100% - 3px))}`;
+layeredVocalStyle.textContent += `.lyric-word-marker.paired:not(.parallel){transform:translate(-50%,-100%)}.lyric-word-marker.paired:not(.parallel) i{background:linear-gradient(110deg,var(--word-marker) 10%,var(--word-marker-secondary) 90%)!important;box-shadow:0 0 8px var(--word-marker),0 0 12px var(--word-marker-secondary)!important}`;
+layeredVocalStyle.textContent += `.lyric-second-line,.lyric-second-line .lyric-parallel-phrase{color:var(--word-marker-secondary,#ff79c8)}.lyric-second-line .second-lyric-word.active{color:var(--word-marker-secondary,#ff79c8)!important;text-shadow:0 0 14px var(--word-marker-secondary,#ff79c8)}.second-lyric-word.profanity{filter:blur(.34em)!important}.voice-color-preview{display:flex;justify-content:center;flex-wrap:wrap;gap:18px;padding:14px;font-weight:800;font-size:16px}.preview-voice1{color:var(--lyrics-active-color)}.preview-voice2,.preview-voices-together{color:var(--word-marker-secondary)}@supports ((background-clip:text) or (-webkit-background-clip:text)){.voice-overlap-gradient #lyrics.voices-merged #lyricCurrentLine .voices-active,.voice-overlap-gradient .preview-voices-together{background:linear-gradient(110deg,var(--lyrics-active-color) 10%,var(--word-marker-secondary) 90%);background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;color:transparent!important;text-shadow:none!important}}`;
+layeredVocalStyle.textContent += `#lyrics.voices-merged #lyricCurrentLine .voice2-active:not(.voice1-active){color:var(--word-marker-secondary)!important;text-shadow:0 0 14px var(--word-marker-secondary)!important}@supports ((background-clip:text) or (-webkit-background-clip:text)){.voice-overlap-gradient #lyrics.voices-merged #lyricCurrentLine .active:not(.voices-active){background:none;-webkit-text-fill-color:currentColor;color:var(--lyrics-active-color)!important;text-shadow:0 0 20px var(--lyrics-active-color)!important}.voice-overlap-gradient #lyrics.voices-merged #lyricCurrentLine .voice2-active:not(.voice1-active){color:var(--word-marker-secondary)!important;text-shadow:0 0 14px var(--word-marker-secondary)!important}}`;
+
+layeredVocalStyle.textContent += `#display .lyric-second-line{position:absolute;z-index:3;top:calc(74px + env(safe-area-inset-top));left:6%;right:6%;width:auto;max-width:1100px;margin:0 auto;max-height:24dvh;overflow:auto;scrollbar-width:none;text-align:center;text-wrap:balance;font:800 calc(clamp(22px,3.4vw,44px) * var(--lyrics-scale-tv,1))/1.25 Manrope,sans-serif;pointer-events:auto;text-shadow:0 2px 14px #0009;animation:none;transition:none}#display.score-lane-active .lyric-second-line{top:max(calc(74px + env(safe-area-inset-top)),var(--score-lane-space,0px))}#display .lyric-current-line.voice-ended{visibility:hidden}#display .lyric-second-line .lyric-voice-label{margin-bottom:7px}#display .lyric-second-line .second-lyric-word{display:inline-block;white-space:pre-wrap}#display .lyric-second-line .second-lyric-word:not(.active){opacity:.7}@media(orientation:portrait) and (max-width:600px){#display .lyric-second-line{left:7%;right:7%;font-size:calc(clamp(22px,6vw,32px) * var(--lyrics-scale-portrait,1));max-height:20dvh}}@media(orientation:landscape) and (max-height:550px){#display .lyric-second-line{top:52px;font-size:calc(clamp(20px,3vw,30px) * var(--lyrics-scale-tv,1));max-height:22dvh}.mobile-native-app #display .lyric-second-line{left:15%;right:15%}}`;
+layeredVocalStyle.textContent += `@media(orientation:portrait){body.mobile-native-app #display.has-second-voice:not(.mobile-stage-tv):not(.sync-editing) .display-content{padding-top:calc(160px + env(safe-area-inset-top))!important}body.mobile-native-app #display.has-second-voice.score-lane-active:not(.mobile-stage-tv):not(.sync-editing) .display-content{padding-top:calc(var(--score-lane-space,100px) + 96px)!important}}@media(orientation:landscape){body.mobile-native-app #display.has-second-voice:not(.mobile-stage-tv):not(.sync-editing) .display-content{padding-top:110px!important}body.mobile-native-app #display.has-second-voice.score-lane-active:not(.mobile-stage-tv):not(.sync-editing) .display-content{padding-top:calc(var(--score-lane-space,70px) + 72px)!important}}`;
 document.head.append(layeredVocalStyle);
 const lyricPreviewStyle = document.createElement('style');
-lyricPreviewStyle.textContent = `.lyric-word.upcoming{opacity:.8!important;filter:brightness(1.08)!important;color:#d9e7b1!important;text-decoration:underline;text-decoration-color:var(--word-marker,#b5f34b);text-decoration-thickness:.055em;text-underline-offset:.16em}.lyrics .next{color:#ffffff85;filter:brightness(1.08)}.manual-sync-current .manual-sync-target{display:block;line-height:1.3}.manual-sync-current .manual-sync-upcoming{display:flex;flex-direction:column;gap:2px;margin-top:4px;color:#d7e7a9;font:600 clamp(12px,1.5vw,16px)/1.35 'DM Sans',sans-serif}.manual-sync-current .manual-sync-upcoming small{color:#a8bf6b;font-size:8px;font-weight:800;letter-spacing:1px}.manual-sync-current .manual-sync-context{font-size:8px;letter-spacing:1px}`;
+lyricPreviewStyle.textContent = `.lyric-word.upcoming,.second-lyric-word.upcoming,.backing-lyric-word.upcoming{opacity:.8!important;filter:brightness(1.08)!important;color:#d9e7b1!important;text-decoration:underline;text-decoration-color:var(--word-marker,#b5f34b);text-decoration-thickness:.055em;text-underline-offset:.16em}.second-lyric-word.upcoming{color:var(--word-marker-secondary)!important;text-decoration-color:var(--word-marker-secondary)}.backing-lyric-word.upcoming{color:#b9a0ff!important;text-decoration-color:#b9a0ff}.lyrics .next{color:#ffffff85;filter:brightness(1.08)}.manual-sync-current .manual-sync-target{display:block;line-height:1.3}.manual-sync-current .manual-sync-upcoming{display:flex;flex-direction:column;gap:2px;margin-top:4px;color:#d7e7a9;font:600 clamp(12px,1.5vw,16px)/1.35 'DM Sans',sans-serif}.manual-sync-current .manual-sync-upcoming small{color:#a8bf6b;font-size:8px;font-weight:800;letter-spacing:1px}.manual-sync-current .manual-sync-context{font-size:8px;letter-spacing:1px}`;
 document.head.append(lyricPreviewStyle);
 const displayVideoBackground = document.createElement('video');
 displayVideoBackground.id = 'displayVideoBg'; displayVideoBackground.className = 'display-video-bg';
@@ -4623,7 +5083,7 @@ if (topbarCrumb) topbarCrumb.outerHTML = '<div class="brand corner-brand"><div c
 
 // Shared modal layering and the mobile stage layout have one final stylesheet.
 const mobileRevisionStyles = document.createElement('link');
-mobileRevisionStyles.rel = 'stylesheet'; mobileRevisionStyles.href = 'mobile-stage.css?v=1.1.1';
+mobileRevisionStyles.rel = 'stylesheet'; mobileRevisionStyles.href = 'mobile-stage.css?v=2.0.0-stage-controls';
 document.head.append(mobileRevisionStyles);
 const finalBrandAndScaleStyles = document.createElement('style');
 finalBrandAndScaleStyles.textContent = `.vx-brand-mark{display:grid;place-items:center;background:#17191a!important;color:#d4fb69!important;border:1px solid #d4fb6944;box-shadow:inset 0 0 0 1px #ffffff08}.vx-brand-mark>span{font:900 12px/1 Manrope,sans-serif;letter-spacing:-1.2px}.vx-brand-mark i{font-style:normal;color:#d4fb69;font-size:17px;vertical-align:-1px;margin:0 -1px}.profanity-picker-dialog{z-index:60}.lyric-backing-line{pointer-events:none}.playback-icon{display:block;width:24px;height:24px;flex:none}.player .controls button .playback-icon{width:22px;height:22px}`;
@@ -4685,7 +5145,7 @@ function updateSongVolumeControls(song) {
       label.hidden = complete && key !== 'Inst';
       if (key === 'Inst') {
         const text = [...label.childNodes].find(node => node.nodeType === Node.TEXT_NODE);
-        if (text) text.textContent = complete ? 'Volume ' : (input.id === 'volInst' ? '♪ Inst.' : 'Instrumental ');
+        if (text) text.textContent = complete ? 'Volume ' : 'Instrumental ';
       }
     }
   }
@@ -4794,7 +5254,7 @@ for (const target of [settingsRow, $('settingsPaneDebug')]) {
     const popupOpen = () => popup.classList.contains('popup-fallback-open') || (Boolean(popup.showPopover) && popup.matches(':popover-open'));
     const closePopup = () => { if (popup.showPopover && popup.matches(':popover-open')) popup.hidePopover(); popup.classList.remove('popup-fallback-open'); };
     function positionPopup() {
-      const rect = speedButton.getBoundingClientRect(), anchor = mobileNative ? displayBottom.getBoundingClientRect() : rect;
+      const rect = speedButton.getBoundingClientRect(), anchor = displayBottom.getBoundingClientRect();
       const width = Math.min(270, innerWidth - 16);
       popup.style.width = `${width}px`;
       popup.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - width - 8))}px`;
@@ -4823,8 +5283,8 @@ Object.assign(englishUiCopy, {'Velocidade':'Speed','Tom':'Pitch','Original':'Ori
 
 // Playback boundary shared by local and phone microphone scoring.
 window.VoxStageScoreHost = {
-  mobile: mobileNative || /Android|iPhone|iPad/i.test(navigator.userAgent),
-  tv:androidTv, api, connectPhone:showRemotePanel,
+  mobile: presentationDevice!=='pc',
+  tv:presentationDevice==='tv', api, connectPhone:showRemotePanel,
   state: () => ({song:current, context:audioContext, playing, position:playbackPosition(),
     base:playbackBase, startTime:playbackStartContextTime, token:playbackToken,
     speed:current?.engine?.speed || 1, transpose:current?.engine?.processor ? playbackSemitones : 0,
@@ -4836,12 +5296,12 @@ window.VoxStageScoreHost = {
     if (!current) return [];
     const result = [], lines = current.lyricLines || [];
     lines.forEach((line, lineIndex) => {
-      const backing = isBackingLyric(line.text), entries = lyricWordEntries(line.text);
+      const backing = isBackingLyric(line.text), parallel=line.source==='parallel', entries = lyricWordEntries(line.text);
       const adjustment = current.lyricAdjustments?.[lineIndex] || {};
       const origin = Number(line.time), offset = Number(adjustment.offsetMs) || 0;
       const speed = Math.max(.5, Math.min(2, Number(adjustment.speed) || 1));
       const adjust = milliseconds => (origin + (milliseconds-origin)*speed + offset)/1000;
-      const words = (backing ? current.backingWordTimings : current.wordTimings)?.find(row => Number(row.lineIndex) === lineIndex)?.words || [];
+      const words = (backing ? current.backingWordTimings : parallel ? current.parallelWordTimings : current.wordTimings)?.find(row => Number(row.lineIndex) === lineIndex)?.words || [];
       const valid = words.filter(cue => Number.isFinite(Number(cue.start)) && Number.isFinite(Number(cue.end)) && Number(cue.end)>Number(cue.start));
       if (valid.length) {
         let entryCursor = 0;
@@ -4849,20 +5309,22 @@ window.VoxStageScoreHost = {
           const wordIndex = entries.findIndex((entry,index) => index>=entryCursor && lyricTokenKey(entry.word)===lyricTokenKey(cue.word));
           if (wordIndex>=0) entryCursor = wordIndex+1;
           const start=adjust(Number(cue.start)*1000), end=adjust(Number(cue.end)*1000);
-          if (end<from || start>to || wordIndex<0) continue;
-          result.push({start,end,text:entries[wordIndex].word,backing,censored:processingSettings.markProfanity===true && isProfanityOccurrence(lineIndex,wordIndex,entries[wordIndex].word)});
+          if (end<from || start>to || wordIndex<0 || parallel&&line.activeWordIndices&&!line.activeWordIndices.includes(wordIndex)) continue;
+          result.push({start,end,text:entries[wordIndex].word,backing,voice:line.voice|| (backing?'backing':parallel?'parallel':'lead'),censored:processingSettings.markProfanity===true && isProfanityOccurrence(lineIndex,wordIndex,entries[wordIndex].word)});
         }
       } else if (entries.length && Number.isFinite(origin)) {
-        const next = lines.slice(lineIndex+1).find(row => isBackingLyric(row.text)===backing);
-        const marked = (backing ? current.backingLineEnds : current.lyricLineEnds)?.[lineIndex];
+        const next = lines.slice(lineIndex+1).find(row => line.voice ? row.voice===line.voice : isBackingLyric(row.text)===backing);
+        const marked = (backing ? current.backingLineEnds : parallel ? current.parallelLineEnds : current.lyricLineEnds)?.[lineIndex];
         const endMs = Math.min(next?.time ?? Infinity, marked!=null && Number(marked)>origin ? Number(marked) : origin+Math.min(8000,Math.max(2200,entries.length*550)));
         const start=adjust(origin), end=adjust(endMs);
         if (end<from || start>to) return;
-        const text = entries.map((entry,index) => processingSettings.markProfanity===true && isProfanityOccurrence(lineIndex,index,entry.word) ? '•••' : entry.word).join(' ');
-        result.push({start,end,text,backing,line:true});
+        const text = entries.flatMap((entry,index) => parallel&&line.activeWordIndices&&!line.activeWordIndices.includes(index)?[]:[processingSettings.markProfanity===true && isProfanityOccurrence(lineIndex,index,entry.word) ? '•••' : entry.word]).join(' ');
+        result.push({start,end,text,backing,voice:line.voice||(backing?'backing':parallel?'parallel':'lead'),line:true});
       }
     });
     return result.sort((a,b)=>a.start-b.start).slice(0,80);
   },
   toast, mix:settingsRow, transport:stagePerformanceTools || transportRow
 };
+
+Object.assign(englishUiCopy,{'Formato da interface':'Interface format','Formato':'Format','Automático (aparelho)':'Automatic (device)','Aplicar formato':'Apply format','Teste os menus e o palco de cada formato neste aparelho. Salve suas edições antes de aplicar: a interface será recarregada e a reprodução será interrompida.':'Test each menu and stage format on this device. Save your edits before applying: the interface will reload and playback will stop.'});

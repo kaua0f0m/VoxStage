@@ -12,6 +12,20 @@ temporary_root = Path(__file__).resolve().parents[1] / 'test-results'
 temporary_root.mkdir(exist_ok=True)
 
 class AndroidYoutube(unittest.TestCase):
+    def test_thumbnail_search_uses_only_standard_youtube(self):
+        calls = []
+        class Extractor:
+            def __init__(self, options): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def extract_info(self, target, **kwargs):
+                calls.append(target)
+                return {'entries': [{'id': 'abcdefghijk', 'title': 'Official video', 'channel': 'Artist'}]}
+        with patch.object(youtube, 'YoutubeDL', Extractor), patch.object(youtube, 'preserve_youtube_catalog_metadata'):
+            result = json.loads(youtube.search_json('Song Artist', 'only'))
+        self.assertEqual(calls, ['ytsearch8:Song Artist'])
+        self.assertEqual(result['entries'][0]['source'], 'YouTube')
+
     def setUp(self):
         youtube.youtube_access = YoutubeAccess()
         self.sleep_patch = patch('youtube_support.time.sleep')

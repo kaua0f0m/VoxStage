@@ -26,6 +26,29 @@ class Response(io.BytesIO):
     headers = {"Content-Length": "4"}
 
 class MvsepTests(unittest.TestCase):
+    def test_retired_local_processing_routes_are_absent(self):
+        from urllib.error import HTTPError
+        host=server.ThreadingHTTPServer(("127.0.0.1",0),server.Handler)
+        runner=threading.Thread(target=host.serve_forever,daemon=True);runner.start()
+        try:
+            with patch.object(server.Handler,'log_message'):
+                for path, method in [('/api/local-audio/status','GET'),('/api/align/status','GET'),('/api/local/separations','GET'),('/api/setup/jobs/11111111-1111-1111-1111-111111111111','GET'),('/api/local/separations','POST'),('/api/setup/install','POST'),('/api/align/11111111-1111-1111-1111-111111111111','POST')]:
+                    request=Request(f'http://127.0.0.1:{host.server_port}'+path,data=b'{}' if method=='POST' else None,method=method,headers={'Content-Type':'application/json'})
+                    with self.assertRaises(HTTPError) as caught:urlopen(request)
+                    self.assertEqual(caught.exception.code,404,path)
+            for name in ['align_song_words','local_audio_separation_worker','setup_install_worker']:
+                self.assertFalse(hasattr(server,name))
+        finally:
+            host.shutdown();host.server_close();runner.join()
+
+    def test_thumbnail_search_skips_music_catalog(self):
+        with patch('yt_dlp.YoutubeDL') as factory, patch.object(server, 'preserve_youtube_catalog_metadata'), patch.object(server.youtube_access, 'run', side_effect=lambda key, callback, **kwargs: callback()):
+            extract = factory.return_value.__enter__.return_value.extract_info
+            extract.return_value = {'entries': [{'id': 'abcdefghijk', 'title': 'Video', 'channel': 'Artist'}]}
+            results = server.youtube_search('Song title', youtube_only=True)
+            extract.assert_called_once_with('ytsearch8:Song title', download=False)
+            self.assertEqual(results[0]['source'], 'YouTube')
+
     def test_build_mode_uses_local_development_backend_flag(self):
         from urllib.error import HTTPError
         host=server.ThreadingHTTPServer(("127.0.0.1",0),server.Handler)

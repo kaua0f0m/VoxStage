@@ -75,6 +75,8 @@ def search_json(query, include_youtube="false"):
     targets = [( _youtube_url(query), "youtube")] if is_url else [
         (f"https://music.youtube.com/search?q={quote(query)}#songs", "music"),
         (f"ytsearch8:{query}", "youtube")]
+    if not is_url and str(include_youtube).lower() == "only":
+        targets = [(f"ytsearch8:{query}", "youtube")]
     include_youtube = str(include_youtube).lower() in ("1", "true", "yes", "on")
     last_error = None
     entries = []

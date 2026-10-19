@@ -41,3 +41,6 @@ native-app/src-tauri/gen/android/local.properties
 native-app/src-tauri/gen/android/tauri.settings.gradle
 native-app/src-tauri/gen/android/app/src/main/jniLibs/
 native-app/src-tauri/gen/android/app/src/main/assets/yt-dlp-*.zip
+
+# Local interface concepts and previews.
+design/

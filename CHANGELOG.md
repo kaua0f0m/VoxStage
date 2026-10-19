@@ -1,5 +1,20 @@
 # Changelog
 
+## Novidades da 2.0
+
+- Interface renovada para cada plataforma: biblioteca e fila lateral no PC, navegação inferior no Android e menus adaptados ao controle remoto na TV. Adição de músicas guiada, configurações reorganizadas e pareamento com mais espaço.
+- Editor com Voz 1, Voz 2 e Backing independentes: editar ou sincronizar uma voz preserva as demais. Letras com () e [] podem ser separadas automaticamente entre as vozes.
+- Duetos com uma única linha e ponto em gradiente nas palavras compartilhadas. Falas diferentes da segunda voz ficam separadas, sem deslocar a letra principal.
+- Sincronização manual com início e fim das frases, intervalos entre trechos, marcação de palavras com hífen e cancelamento que preserva os tempos existentes. Censura organizada por voz.
+- Capas pelo Apple/iTunes, Cover Art Archive sob demanda e miniaturas do YouTube. Busca pelo título, reaproveitamento de resultados e aplicação automática da miniatura da música escolhida, preservando capas manuais.
+- Exportação de músicas individuais ou da biblioteca em .voxstage.zip, com áudio, imagens, letras e sincronização. Importação com prévia e restauração opcional de preferências.
+- Fila editável e continuação pela ordem da biblioteca; filtros de letras prontas, favoritas e músicas ocultas. Opção de baixar o vídeo junto da música e remoção de anexos adicionados por engano.
+- Palco com controles compactos, fontes e cores personalizáveis, ocultamento manual independente do mouse e cursor oculto após cinco segundos de inatividade. Na TV, navegação por setas revisada, retorno de foco ao fechar menus e play direto no palco.
+- Introdução guiada e Guia de uso com ajuda sobre sincronização, pontuação, conexão entre aparelhos e erros comuns. A TV abre diretamente na conexão com o celular.
+- O processamento local de separação e alinhamento foi removido. A separação usa MVSEP; músicas completas e faixas já separadas continuam funcionando sem processamento.
+
+O YouTube ainda pode exigir confirmação de robô em algumas redes. Na pontuação, fones de ouvido ajudam a evitar que o som da música encubra a voz ou seja contado como canto.
+
 ## Novidades da 1.1.2
 
 - Busca de capas com recuperação de falhas de conexão, cache, proteção contra buscas duplicadas e espera indicada quando o serviço estiver indisponível.

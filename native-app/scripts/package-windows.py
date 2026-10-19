@@ -15,12 +15,14 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = os.environ.get("VOXSTAGE_BUILD_VERSION") or json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
 if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?', VERSION):
     raise SystemExit('Invalid package version.')
-RELEASE = ROOT / "releases" / f"V{VERSION}"
+DEBUG_BUILD = "--debug" in sys.argv
+RELEASE = ROOT / "releases" / f"V{VERSION}{'-debug' if DEBUG_BUILD else ''}"
 PACKAGE = RELEASE / "VoxStage-Windows-x64"
 APP = PACKAGE / "app"
 RUNTIME = APP / "python"
@@ -41,7 +43,7 @@ def copy_tree(source: Path, target: Path, excluded=()) -> None:
 
 
 def write_archive() -> None:
-    archive = RELEASE / f"VoxStage-{VERSION}-Windows-x64.zip"
+    archive = RELEASE / f"VoxStage-{VERSION}-Windows-x64{'-debug' if DEBUG_BUILD else ''}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
         for file in sorted(PACKAGE.rglob("*")):
             if file.is_file() and "__pycache__" not in file.parts:
@@ -49,10 +51,46 @@ def write_archive() -> None:
     print(f"Windows portable: {archive} ({archive.stat().st_size:,} bytes)")
 
 
+def install_executable(source: Path, destination: Path) -> None:
+    """Stage first; an open Windows image may be renamed but not overwritten."""
+    staged = destination.with_suffix(".exe.next")
+    shutil.copy2(source, staged)
+    held = RELEASE / ".running-executables"
+    if not held.resolve().is_relative_to(RELEASE.resolve()):
+        raise RuntimeError("Executable holding directory is outside the release.")
+    previous = None
+    try:
+        try:
+            staged.replace(destination)
+        except PermissionError:
+            # Keep the running process alive. This private holding directory is
+            # outside PACKAGE and therefore never enters a distributable ZIP.
+            held.mkdir(exist_ok=True)
+            previous = held / f"{uuid4()}.exe"
+            destination.rename(previous)
+            try:
+                staged.replace(destination)
+            except Exception:
+                previous.rename(destination)
+                previous = None
+                raise
+            print("Executable updated; reopen the running application to load this version.", flush=True)
+    finally:
+        staged.unlink(missing_ok=True)
+    if held.is_dir():
+        for old in held.glob("*.exe"):
+            if old.is_symlink():
+                continue
+            try:
+                old.unlink()
+            except OSError:
+                pass  # Still running; a later packaging run can clean it up.
+
+
 def main() -> None:
     runtime_only = "--runtime-only" in sys.argv
     refresh_only = "--refresh-only" in sys.argv
-    executable = ROOT / "native-app/src-tauri/target/release/voxstage-native.exe"
+    executable = ROOT / "native-app/src-tauri/target" / ("debug" if DEBUG_BUILD else "release") / "voxstage-native.exe"
     if not runtime_only and not executable.is_file():
         raise SystemExit("Build the Windows executable before packaging.")
     if sys.version_info[:2] != (3, 13):
@@ -70,8 +108,13 @@ def main() -> None:
             with file.open('rb') as source:
                 return hashlib.file_digest(source, 'sha256').digest()
         if not destination_executable.is_file() or executable_hash(executable) != executable_hash(destination_executable):
-            shutil.copy2(executable, destination_executable)
+            install_executable(executable, destination_executable)
     config = json.loads((ROOT / "native-app/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    # Retired optional AI tools must also disappear when refreshing an older package.
+    for retired in ("local_audio_runner.py", "requirements-local-audio-cpu.txt", "requirements-local-audio-dml.txt", "requirements-align.txt"):
+        obsolete = APP / retired
+        if obsolete.is_file():
+            obsolete.unlink()
     for source, destination in config["bundle"]["resources"].items():
         source_file = (ROOT / "native-app/src-tauri" / source).resolve()
         target_file = PACKAGE / destination
@@ -127,7 +170,8 @@ def main() -> None:
     ffmpeg = Path(ffmpeg_location)
     if not ffmpeg.is_file():
         raise SystemExit("The FFmpeg runtime is missing.")
-    shutil.copy2(ffmpeg, bin_dir / "ffmpeg.exe")
+    if ffmpeg.resolve() != (bin_dir / "ffmpeg.exe").resolve():
+        shutil.copy2(ffmpeg, bin_dir / "ffmpeg.exe")
     licenses = PACKAGE / "licenses"
     licenses.mkdir(exist_ok=True)
     node_license = Path(os.environ["VOXSTAGE_NODE_LICENSE"]) if os.environ.get("VOXSTAGE_NODE_LICENSE") else next((Path(node).parent / name for name in ["LICENSE", "LICENSE.txt", "LICENSE.md"]
@@ -161,7 +205,7 @@ def main() -> None:
         'shell.Run Chr(34) & executable & Chr(34), 1, False\r\n', encoding="ascii")
     (PACKAGE / "Abrir VoxStage.bat").unlink(missing_ok=True)
     (PACKAGE / "LEIA-ME.txt").write_text(
-        f"VoxStage {VERSION} - Windows x64\n\n"
+        f"VoxStage {VERSION}{' Debug' if DEBUG_BUILD else ''} - Windows x64\n\n"
         "Extraia a pasta inteira e abra VoxStage.exe (ou Abrir VoxStage.vbs).\n"
         "Somente a janela do app aparece; o servidor roda em segundo plano.\n"
         "Python, yt-dlp, o runtime JS e FFmpeg estao incluidos. Node.js instalado nao e necessario.\n"
@@ -171,7 +215,7 @@ def main() -> None:
         "O ambiente VOXSTAGE_DATA_DIR permite indicar outra pasta de biblioteca.\n"
         "Logs: voxstage-server.log na pasta da biblioteca.\n"
         "Feche a outra instancia do VoxStage antes de abrir esta versao: ambas usam a porta 8000.\n"
-        "Instalacoes opcionais de modelos de IA precisam de internet e espaco adicional.\n",
+        "Para separar faixas, configure sua chave MVSEP nas configuracoes do app.\n",
         encoding="utf-8")
     # Runtime import is a packaging check; no external service or user data is used.
     subprocess.run([str(RUNTIME / "python.exe"), "-E", "-s", "-c",

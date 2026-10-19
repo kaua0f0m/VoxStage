@@ -23,7 +23,7 @@ mod phone_microphone;
 #[tauri::command]
 fn is_debug_build() -> bool { cfg!(debug_assertions) }
 
-#[cfg(all(not(mobile), not(debug_assertions)))]
+#[cfg(all(not(mobile), any(not(debug_assertions), feature = "desktop-standalone")))]
 use std::{
     process::{Child, Command, Stdio},
 };
@@ -160,13 +160,13 @@ fn map_ytdlp_entry(item: &Value) -> Option<Value> {
 }
 
 #[tauri::command]
-async fn mobile_youtube_search(query: String, include_youtube: bool) -> Result<Vec<Value>, String> {
+async fn mobile_youtube_search(query: String, include_youtube: bool, youtube_only: Option<bool>) -> Result<Vec<Value>, String> {
     let query = query.trim().to_owned();
     if query.is_empty() { return Err("Digite o nome da música ou cole um link do YouTube.".to_string()); }
     if query.starts_with("http") && !valid_youtube_url(&query) {
         return Err("Cole um link do YouTube ou pesquise pelo nome da música.".to_string());
     }
-    let include_youtube = include_youtube.to_string();
+    let include_youtube = if youtube_only.unwrap_or(false) { "only".to_string() } else { include_youtube.to_string() };
     let output = tauri::async_runtime::spawn_blocking(move || android_ytdlp_call("searchJson", &query, Some(&include_youtube)))
         .await.map_err(|error| format!("A busca foi interrompida: {error}"))??;
     let parsed: Value = serde_json::from_str(&output)
@@ -250,45 +250,19 @@ async fn mobile_music_metadata(title: String, url: String) -> Result<Value, Stri
 }
 
 #[tauri::command]
-async fn mobile_cover_search(query: String) -> Result<Vec<Value>, String> {
-    let query = query.trim();
-    if query.len() < 2 || query.len() > 180 { return Err("Digite o nome da música ou artista.".into()); }
-    let tracks = itunes_tracks(query, 16).await?;
-    let mut seen = HashSet::new();
-    let mut results = Vec::new();
-    for track in tracks {
-        let Some(album) = track.get("collectionName").and_then(Value::as_str).filter(|name| !name.is_empty()) else { continue };
-        let Some(artwork) = track.get("artworkUrl100").and_then(Value::as_str) else { continue };
-        let id = track.get("collectionId").and_then(Value::as_u64).unwrap_or(0);
-        if !seen.insert(id) { continue; }
-        let large = artwork.replace("100x100bb", "1200x1200bb").replace("100x100", "1200x1200");
-        results.push(json!({"id":id.to_string(),"title":album,
-            "artist":track.get("artistName").and_then(Value::as_str).unwrap_or("Artista desconhecido"),
-            "track":track.get("trackName").and_then(Value::as_str).unwrap_or(""),
-            "previewUrl":artwork.replace("http://", "https://"),"imageUrl":large.replace("http://", "https://")}));
-        if results.len() >= 8 { break; }
-    }
-    Ok(results)
+async fn mobile_cover_search(query: String, provider: Option<String>, artist: Option<String>) -> Result<Value, String> {
+    let settings = json!({"provider":provider.unwrap_or_else(|| "archive".into()),"artist":artist.unwrap_or_default()}).to_string();
+    let output = tauri::async_runtime::spawn_blocking(move || android_ytdlp_call("coverSearchJson", &query, Some(&settings)))
+        .await.map_err(|error| format!("A busca de capas foi interrompida: {error}"))??;
+    serde_json::from_str(&output).map_err(|_| "O provedor de capas retornou uma resposta inválida.".into())
 }
 
 #[tauri::command]
 async fn mobile_cover_download(app: AppHandle, url: String) -> Result<Value, String> {
-    let parsed = reqwest::Url::parse(&url).map_err(|_| "Endereço de capa inválido.".to_string())?;
-    let allowed = |host: &str| host.ends_with(".mzstatic.com") || host == "mzstatic.com" || host == "is1-ssl.mzstatic.com";
-    if parsed.scheme() != "https" || !parsed.host_str().is_some_and(allowed) { return Err("Endereço de capa inválido.".into()); }
-    let response = mvsep_client()?.get(parsed).timeout(Duration::from_secs(35)).send().await
-        .map_err(|error| format!("Não consegui baixar a capa: {error}"))?;
-    if !response.url().host_str().is_some_and(allowed) { return Err("A imagem foi redirecionada para um endereço inesperado.".into()); }
-    if !response.status().is_success() { return Err(format!("A capa respondeu HTTP {}.", response.status())); }
-    let mime = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
-    let ext = if mime.starts_with("image/jpeg") { "jpg" } else if mime.starts_with("image/png") { "png" }
-        else if mime.starts_with("image/webp") { "webp" } else { return Err("O resultado não é uma imagem suportada.".into()); };
-    if response.content_length().is_some_and(|size| size > 20 * 1024 * 1024) { return Err("A capa excede 20 MB.".into()); }
-    let bytes = response.bytes().await.map_err(|error| format!("Não consegui receber a capa: {error}"))?;
-    if bytes.is_empty() || bytes.len() > 20 * 1024 * 1024 { return Err("A capa está vazia ou excede 20 MB.".into()); }
-    let name = format!("{}.{}", uuid::Uuid::new_v4(), ext);
-    fs::write(mobile_music_dir(&app)?.join(&name), bytes).map_err(|error| format!("Não consegui salvar a capa: {error}"))?;
-    Ok(json!({"name":name}))
+    let directory = mobile_music_dir(&app)?.to_string_lossy().to_string();
+    let output = tauri::async_runtime::spawn_blocking(move || android_ytdlp_call("coverDownloadJson", &url, Some(&directory)))
+        .await.map_err(|error| format!("O download da capa foi interrompido: {error}"))??;
+    serde_json::from_str(&output).map_err(|_| "Não consegui registrar a capa recebida.".into())
 }
 
 fn mobile_mvsep_config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -709,6 +683,32 @@ fn save_mobile_library(path: &Path, songs: &[Value]) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(songs).map_err(|error| error.to_string())?;
     fs::write(&temp, data).map_err(|error| error.to_string())?;
     fs::rename(temp, path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn mobile_archive(app: AppHandle, action: String, mut request: Value) -> Result<Value, String> {
+    if !["export", "inspect", "import", "save", "save-status"].contains(&action.as_str()) || !request.is_object() {
+        return Err("Operação de biblioteca inválida.".into());
+    }
+    let directory=app.path().app_data_dir().map_err(|error|error.to_string())?;
+    request["dataDir"]=json!(directory.to_string_lossy());
+    if action=="inspect" {
+        let name=request["name"].as_str().ok_or("Pacote de importação inválido.")?;
+        if !valid_media_name(name)||!name.ends_with(".zip") {return Err("Pacote de importação inválido.".into());}
+    }
+    if action=="save" {
+        let id=request["id"].as_str().ok_or("Exportação inválida.")?;
+        let id=uuid::Uuid::parse_str(id).map_err(|_|"Exportação inválida.")?;
+        request["path"]=json!(directory.join(".archives").join(format!("{id}.zip")).to_string_lossy());
+    }
+    let output=tauri::async_runtime::spawn_blocking(move || {
+        // Use the same lock as song saves and paired-device transfers.
+        let _guard=MOBILE_LIBRARY_LOCK.lock().map_err(|_|"Biblioteca indisponível.")?;
+        android_ytdlp_call("archiveJson", &action, Some(&request.to_string()))
+    }).await.map_err(|error|error.to_string())??;
+    let result:Value=serde_json::from_str(&output).map_err(|_|"Resposta de biblioteca inválida.")?;
+    if let Some(error)=result["error"].as_str(){return Err(error.to_owned());}
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1141,7 +1141,7 @@ fn mobile_music_dir_from_app_data(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|error| error.to_string())
 }
 
-#[cfg(all(not(mobile), not(debug_assertions)))]
+#[cfg(all(not(mobile), any(not(debug_assertions), feature = "desktop-standalone")))]
 struct BackendProcess(Mutex<Option<Child>>);
 
 #[cfg(not(mobile))]
@@ -1160,7 +1160,7 @@ fn wait_for_server() -> Result<(), Box<dyn std::error::Error>> {
     .into())
 }
 
-#[cfg(all(not(mobile), not(debug_assertions)))]
+#[cfg(all(not(mobile), any(not(debug_assertions), feature = "desktop-standalone")))]
 fn start_packaged_backend(app: &tauri::App) -> Result<Child, Box<dyn std::error::Error>> {
     let resources = app.path().resource_dir()?.join("app");
     if TcpStream::connect(("127.0.0.1", APP_PORT)).is_ok() {
@@ -1204,7 +1204,9 @@ fn start_packaged_backend(app: &tauri::App) -> Result<Child, Box<dyn std::error:
     Ok(command
         .current_dir(&resources)
         .env("VOXSTAGE_DATA_DIR", data_dir)
+        .env("VOXSTAGE_PARENT_PID", std::process::id().to_string())
         .env("VOXSTAGE_HOST", "0.0.0.0")
+        .env("VOXSTAGE_DEBUG_BUILD", if cfg!(debug_assertions) { "1" } else { "0" })
         .env("VOXSTAGE_PORT", APP_PORT.to_string())
         .env("PATH", std::env::join_paths(runtime_path)?)
         .stdin(Stdio::null())
@@ -1222,6 +1224,7 @@ pub fn run() {
         mobile_save_song,
         mobile_delete_song,
         mobile_write_file_chunk,
+        mobile_archive,
         mobile_get_pc_library,
         mobile_import_pc_songs,
         mobile_send_pc_song,
@@ -1250,18 +1253,48 @@ pub fn run() {
 
     #[cfg(not(mobile))]
     let builder = builder.setup(|app| {
-        #[cfg(not(debug_assertions))]
+        #[cfg(any(not(debug_assertions), feature = "desktop-standalone"))]
         app.manage(BackendProcess(Mutex::new(Some(start_packaged_backend(app)?))));
 
         wait_for_server()?;
+        // Create packaged HTTP windows only after the backend accepts connections.
+        for config in app.config().app.windows.iter().filter(|window| !window.create) {
+            if let tauri::WebviewUrl::External(url) = &config.url {
+                if url.scheme() == "http"
+                    && url.host_str() == Some("127.0.0.1")
+                    && url.port_or_known_default() == Some(APP_PORT)
+                {
+                    tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
+                }
+            }
+        }
         Ok(())
     });
 
+    let mut context = tauri::generate_context!();
+    #[cfg(not(mobile))]
+    {
+        // The portable UI can change without a version bump. A fresh entry URL
+        // bypasses previously cached HTML before the server's no-store applies.
+        let launch = uuid::Uuid::new_v4().to_string();
+        for window in &mut context.config_mut().app.windows {
+            if let tauri::WebviewUrl::External(url) = &mut window.url {
+                if url.scheme() == "http"
+                    && url.host_str() == Some("127.0.0.1")
+                    && url.port_or_known_default() == Some(APP_PORT)
+                {
+                    url.query_pairs_mut().append_pair("launch", &launch);
+                    window.create = false;
+                }
+            }
+        }
+    }
+
     builder
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Não foi possível iniciar o VoxStage.")
         .run(|_app, _event| {
-            #[cfg(all(not(mobile), not(debug_assertions)))]
+            #[cfg(all(not(mobile), any(not(debug_assertions), feature = "desktop-standalone")))]
             if let tauri::RunEvent::Exit = _event {
                 if let Some(backend) = _app.try_state::<BackendProcess>() {
                     if let Ok(mut child) = backend.0.lock() {

@@ -38,7 +38,9 @@ object VoxStageMediaControls {
     (context.resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION
 
   fun tvKey(key: String) {
-    activity?.runOnUiThread { webView?.evaluateJavascript("window.voxstageTvKey && window.voxstageTvKey('$key')", null) }
+    val script = if (key == "Back") "window.voxstageBack ? window.voxstageBack() : (window.voxstageTvKey && window.voxstageTvKey('Back'))"
+      else "window.voxstageTvKey && window.voxstageTvKey('$key')"
+    activity?.runOnUiThread { webView?.evaluateJavascript(script, null) }
   }
 
   fun attach(host: MainActivity, view: WebView) {

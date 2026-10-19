@@ -1,0 +1,324 @@
+@font-face{font-family:Nunito;src:url("fonts/Nunito-Variable.ttf") format("truetype");font-weight:200 1000;font-display:swap}
+/* A / PC, C / phone, B / TV. Singing-stage styles remain independent. */
+body.voxstage-v2{background:#111216;--panel:#1a1b20;--line:#2c2e35;--muted:#989ba7;font-family:'Nunito','DM Sans',sans-serif}
+body.voxstage-v2 .app{display:block!important;min-height:100dvh}
+body.voxstage-v2 .main{max-width:none!important;width:auto;margin:0;padding:24px 32px 124px}
+body.voxstage-v2 .hero,body.voxstage-v2 .mobile-library-actions,body.voxstage-v2 .stats{display:none!important}
+body.voxstage-v2 [hidden]{display:none!important}
+body.voxstage-v2 .topbar{position:static;margin:0 0 25px;padding:0;min-height:38px;border:0;background:transparent;backdrop-filter:none}
+body.voxstage-v2 .menu-breadcrumb{font-size:12px;color:var(--muted)}
+body.voxstage-v2 .welcome{display:flex;align-items:center;justify-content:space-between;margin:0 0 25px;gap:18px}
+body.voxstage-v2 .menu-section-heading h1{font:850 clamp(26px,2.6vw,38px)/1.15 'Nunito',sans-serif;letter-spacing:-1px;margin:0}
+body.voxstage-v2 .menu-section-heading .eyebrow{font-size:10px;letter-spacing:2px;margin-bottom:9px}
+body.voxstage-v2 .menu-section-heading p{color:var(--muted);font-size:13px;margin:10px 0 0}
+body.voxstage-v2 .menu-header-actions{display:flex;align-items:center;gap:10px;flex:none}
+body.voxstage-v2 .btn{border-radius:12px;min-height:44px;font-size:13px;padding:10px 16px}
+body.voxstage-v2 .menu-icon{width:21px;height:21px;flex:none;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
+body.voxstage-v2 .menu-navigation{display:flex;gap:6px}
+body.voxstage-v2 .menu-nav-button{display:flex!important;align-items:center;gap:11px;min-height:44px;padding:10px 13px!important;margin:0;background:transparent;border:1px solid transparent;border-radius:11px;color:#a3a6b2;font:750 13px 'Nunito',sans-serif;text-align:left;white-space:nowrap}
+body.voxstage-v2 .menu-nav-button:hover{background:#23252d;color:var(--text)}
+body.voxstage-v2 .menu-nav-button[aria-current="page"],body.voxstage-v2 .menu-nav-button[aria-pressed="true"]{color:var(--lime);background:color-mix(in srgb,var(--lime) 10%,#181a1c)}
+body.voxstage-v2 .menu-utilities{display:flex;gap:5px}
+body.voxstage-v2 .menu-utilities .menu-nav-button{font-size:12px}
+body.voxstage-v2 .menu-sidebar{position:fixed;left:0;top:0;bottom:94px;width:190px;padding:26px 16px;background:#16171c;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:38px;z-index:4}
+body.voxstage-v2 .menu-sidebar .brand{padding:0;gap:8px;font-size:21px}
+body.voxstage-v2 .menu-sidebar .vx-brand-mark{width:32px!important;height:34px!important;flex-basis:32px}
+body.voxstage-v2 .menu-sidebar .menu-navigation{flex-direction:column;gap:8px}
+body.voxstage-v2 .menu-sidebar-bottom{margin-top:auto;display:grid;gap:13px;color:#767b87;font-size:11px;line-height:1.6;padding:0 10px}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar{gap:24px;padding-top:22px;padding-bottom:18px}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar .menu-navigation{min-height:0;overflow-y:auto;scrollbar-width:thin;flex-shrink:1}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar-bottom{padding:0;flex-shrink:0;gap:10px}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar-bottom>.menu-utilities{display:flex;flex-direction:column;align-items:stretch;gap:4px;margin-bottom:6px}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar-bottom .menu-utilities .menu-nav-button{width:100%!important;min-height:40px;justify-content:flex-start;font-size:12px}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar-bottom>span{padding:0 10px}
+body.voxstage-v2 .menu-version{font-size:10px}
+body.voxstage-v2[data-menu-device="pc"] .main{margin-left:190px}
+body.voxstage-v2 .menu-content-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:30px;align-items:start}
+body.voxstage-v2 .menu-library{min-width:0;scroll-margin-top:20px}
+body.voxstage-v2 .filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 13px}
+body.voxstage-v2 .filters h2.library-heading{font:800 17px 'Nunito',sans-serif;flex:1 0 100%;display:flex;gap:9px;margin:0 0 3px}
+body.voxstage-v2 .song-count{background:#24262e;color:var(--muted);border:0;font-size:11px;padding:3px 7px}
+body.voxstage-v2 .search{flex:1 1 180px;width:auto;min-width:0;height:42px;padding:0 13px;font-size:12px;background:#191b20;border:1px solid #30333c;border-radius:10px;grid-column:auto}
+body.voxstage-v2 .filter-btn{height:38px;font-size:11px;background:#1b1d23;border:1px solid var(--line);border-radius:9px;white-space:nowrap}
+body.voxstage-v2 #trackViewToggle{display:none}
+body.voxstage-v2 .menu-lyric-filters{display:flex;gap:7px;margin:0 0 16px;overflow:auto;scrollbar-width:none}
+body.voxstage-v2 .menu-lyric-filters button{font-size:11px;min-height:33px;padding:7px 12px!important;border:1px solid var(--line);border-radius:30px}
+body.voxstage-v2 .menu-lyric-filters svg{display:none}
+body.voxstage-v2 .grid,body.voxstage-v2 .grid.compact-view{grid-template-columns:1fr;gap:7px}
+body.voxstage-v2 .track,body.voxstage-v2 .grid.compact-view .track{display:flex;gap:14px;align-items:center;min-height:83px;padding:11px 12px;border:1px solid #2a2d35;border-radius:13px;background:#191b21;box-shadow:none;isolation:auto}
+body.voxstage-v2 .track:hover{transform:none!important;background:#1f2229;border-color:#424753}
+body.voxstage-v2 .track::before{display:none}
+body.voxstage-v2 .track .cover,body.voxstage-v2 .grid.compact-view .cover{flex:0 0 58px;width:58px!important;height:58px!important;min-height:58px;aspect-ratio:1;border-radius:10px;box-shadow:none;border:0}
+body.voxstage-v2 .cover-image,body.voxstage-v2 .cover-image.wide-cover{width:100%!important;height:100%!important;object-fit:cover}
+body.voxstage-v2 .track .cover-letter{font-size:26px}
+body.voxstage-v2 .track .track-play{width:28px;height:28px;right:3px;bottom:3px;display:grid;place-items:center;font-size:11px;opacity:0;transition:opacity .15s}
+body.voxstage-v2 .track:hover .track-play,body.voxstage-v2 .track:focus-within .track-play{opacity:1}
+body.voxstage-v2 .track .track-info,body.voxstage-v2 .grid.compact-view .track-info{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;flex:1;min-width:0;padding:0}
+body.voxstage-v2 .track .track-title{grid-column:1;grid-row:1;font:850 14px 'Nunito',sans-serif;text-shadow:none}
+body.voxstage-v2 .track .track-artist{grid-column:1;grid-row:2;margin:0;color:var(--muted);font-size:11px;text-shadow:none}
+body.voxstage-v2 .track .track-meta{grid-column:2;grid-row:1/3;margin:0;display:flex;gap:10px;align-items:center}
+body.voxstage-v2 .track .tag{font-size:9px;white-space:nowrap;padding:5px 7px;border-radius:6px;color:#c4c9b7;background:#2a3024}
+body.voxstage-v2 .track .track-actions{display:flex;gap:3px}
+body.voxstage-v2 .track .action-icon{width:31px;height:34px;min-height:34px;display:grid;place-items:center;padding:4px;font-size:17px}
+body.voxstage-v2 .track .local-separation-status{grid-column:1/-1;font-size:10px}
+body.voxstage-v2 .track-menu{z-index:40;right:0;min-width:220px}
+body.voxstage-v2 .track-menu button{font-size:12px;min-height:40px}
+body.voxstage-v2 .empty{font-size:13px;line-height:1.6;padding:45px 24px}
+body.voxstage-v2 .menu-queue-panel{position:sticky;top:24px;border:1px solid var(--line);background:#181a20;border-radius:18px;padding:20px;min-width:0}
+body.voxstage-v2 .menu-queue-panel header{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:18px}
+body.voxstage-v2 .menu-queue-panel .eyebrow{font-size:9px;letter-spacing:1.5px;margin-bottom:6px}
+body.voxstage-v2 .menu-queue-panel h2{font:850 20px 'Nunito',sans-serif;margin:0}
+body.voxstage-v2 .menu-icon-button{width:32px;height:32px;border-radius:8px;background:transparent;color:#9ca3b1;display:grid;place-items:center;padding:5px}
+body.voxstage-v2 .menu-icon-button:hover{background:#303540;color:white}
+body.voxstage-v2 .menu-icon-button:disabled{opacity:.25;cursor:default}
+body.voxstage-v2 #menuQueueClose{display:none}
+body.voxstage-v2 .menu-now-idle{border:1px dashed #373c46;border-radius:12px;display:grid;justify-items:center;gap:9px;padding:25px 12px;text-align:center;color:var(--muted);font-size:11px}
+body.voxstage-v2 .menu-now-idle strong{font-size:14px;color:var(--text)}
+body.voxstage-v2 .menu-now-idle svg{color:var(--lime);margin-bottom:5px}
+body.voxstage-v2 .menu-now-label{font-size:9px;font-weight:850;letter-spacing:1.4px;color:var(--lime)}
+body.voxstage-v2 .menu-now-song{display:grid;width:100%;gap:5px;padding:12px 0 0;background:transparent;text-align:left;color:var(--text)}
+body.voxstage-v2 .menu-now-art{height:145px;display:grid;place-items:center;border-radius:12px;overflow:hidden;background:linear-gradient(130deg,#454c38,#242835);font-size:60px;color:var(--lime);margin-bottom:7px}
+body.voxstage-v2 .menu-now-art img{width:100%;height:100%;object-fit:cover;min-height:0}
+body.voxstage-v2 .menu-now-song strong{font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.voxstage-v2 .menu-now-song small{font-size:11px;color:var(--muted)}
+body.voxstage-v2 .menu-queue-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:25px}
+body.voxstage-v2 .menu-queue-heading h3{font-size:12px;margin:0;color:#aab0bf}
+body.voxstage-v2 #menuClearQueue{font-size:11px;background:transparent;color:var(--muted);padding:5px}
+body.voxstage-v2 #menuQueueItems{list-style:none;padding:0;margin:10px 0 0;max-height:300px;overflow:auto;scrollbar-width:thin}
+body.voxstage-v2 #menuQueueItems li{display:flex;align-items:center;gap:4px;padding:7px 0;border-bottom:1px solid #ffffff08}
+body.voxstage-v2 .menu-queue-song{display:flex;gap:10px;align-items:center;text-align:left;min-width:0;flex:1;padding:4px;background:transparent;border-radius:8px}
+body.voxstage-v2 .menu-queue-song:hover{background:#272b35}
+body.voxstage-v2 .menu-queue-art{width:40px;height:40px;flex:none;border-radius:7px;background:#363c30;display:grid;place-items:center;color:var(--lime);font-size:20px;overflow:hidden}
+body.voxstage-v2 .menu-queue-art img{width:100%;height:100%;object-fit:cover}
+body.voxstage-v2 .menu-queue-song>span:last-child{min-width:0;display:grid;gap:4px}
+body.voxstage-v2 .menu-queue-song strong,body.voxstage-v2 .menu-queue-song small{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+body.voxstage-v2 .menu-queue-song strong{font-size:12px}
+body.voxstage-v2 .menu-queue-song small{font-size:10px;color:var(--muted)}
+body.voxstage-v2 .menu-queue-tools{display:flex}
+body.voxstage-v2 .menu-queue-tools button{width:27px;height:30px;padding:5px}
+body.voxstage-v2 .menu-queue-tools svg{width:17px;height:17px}
+body.voxstage-v2 .menu-queue-empty,body.voxstage-v2 .menu-queue-note{font-size:11px;color:var(--muted);line-height:1.6}
+body.voxstage-v2 .menu-queue-footer{margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
+body.voxstage-v2 .menu-queue-footer p{font-size:11px;color:var(--muted);line-height:1.6}
+body.voxstage-v2 .player{left:0!important;right:0;bottom:0;border:0;border-top:1px solid #343843;border-radius:0;background:#191b21f5;box-shadow:none;min-height:94px;padding:15px 26px;grid-template-columns:minmax(0,1fr) minmax(210px,1.2fr) minmax(170px,1fr);z-index:5}
+body.voxstage-v2 .player .now{max-width:none}
+body.voxstage-v2 .player .now-title{font-size:13px}
+body.voxstage-v2 .player .now-sub{font-size:11px}
+body.voxstage-v2 .player .mini-cover{width:48px;height:48px;flex:none;border-radius:10px}
+/* The library player uses the same quiet surfaces and SVG controls as the stage. */
+body.voxstage-v2 .player .controls .playback-icon{display:block;width:20px;height:20px;flex:none}
+body.voxstage-v2 .player .controls>button{display:inline-flex;align-items:center;justify-content:center;border-radius:10px;border:1px solid #3b424d;background:#242a33;color:#c8d0d9;min-width:36px;min-height:36px;padding:7px;transition:background .15s,border-color .15s}
+body.voxstage-v2 .player .controls>button:hover{background:#303946;border-color:#626f80;color:#f2f4ee}
+body.voxstage-v2 .player .controls>#playBtn{background:var(--lime);color:#17200e;border-color:var(--lime);border-radius:50%;width:40px;height:40px;padding:0}
+body.voxstage-v2[data-menu-device="pc"] .player{padding:12px 22px;gap:24px;grid-template-columns:minmax(0,1fr) minmax(260px,1.15fr) minmax(0,1fr);align-items:center}
+body.voxstage-v2[data-menu-device="pc"] .player .now{height:68px;min-height:0;max-width:520px}
+body.voxstage-v2[data-menu-device="pc"] .player .mini-stage{gap:12px;padding:9px 12px;border:1px solid #363d48;border-radius:13px;background:#20262f;box-shadow:none}
+body.voxstage-v2[data-menu-device="pc"] .player .mini-stage-image{opacity:.32;filter:blur(3px) saturate(.8)}
+body.voxstage-v2[data-menu-device="pc"] .player .mini-stage-shade{background:linear-gradient(90deg,#121923e8,#151b25a6)}
+body.voxstage-v2[data-menu-device="pc"] .player .mini-stage .now-title{font-size:12px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.voxstage-v2[data-menu-device="pc"] .player .mini-stage .now-sub{font-size:11px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#a2adbb}
+body.voxstage-v2[data-menu-device="pc"] .player .mini-stage .now-lyric{font-family:var(--lyrics-font,Nunito,sans-serif);font-weight:var(--lyrics-weight,400);font-size:15px;line-height:1.3;margin-top:3px;text-shadow:none}
+body.voxstage-v2[data-menu-device="pc"] .player .controls{gap:9px;justify-content:center}
+body.voxstage-v2[data-menu-device="pc"] .player .seek{gap:10px;margin-top:6px;font-size:10px;color:#aab6c6;font-variant-numeric:tabular-nums}
+body.voxstage-v2[data-menu-device="pc"] .player .seek input{min-width:0;height:14px;accent-color:var(--lime)}
+body.voxstage-v2[data-menu-device="pc"] .player .volumes{gap:14px;justify-content:flex-end;min-width:0}
+body.voxstage-v2[data-menu-device="pc"] .player .volume{display:grid;grid-template-columns:1fr;gap:4px;width:92px;min-width:0;font-size:11px;line-height:1.3}
+body.voxstage-v2[data-menu-device="pc"] .player .volume input{width:100%;height:15px;margin:0;accent-color:var(--lime)}
+body.voxstage-v2 #menuQueueDialog{width:min(480px,calc(100% - 24px));max-height:calc(100dvh - 24px);padding:0;border:1px solid #3d4351;border-radius:18px;background:#181a20;color:var(--text)}
+body.voxstage-v2 #menuQueueDialog::backdrop{background:#060709bd;backdrop-filter:blur(10px)}
+body.voxstage-v2 #menuQueueDialog .menu-queue-panel{position:static;border:0;padding:22px;display:block}
+body.voxstage-v2 #menuQueueDialog #menuQueueClose{display:grid}
+body.voxstage-v2 #menuQueueDialog #menuQueueItems{max-height:40dvh}
+body.voxstage-v2 #menuQueueDialog .menu-now-art{height:120px}
+body.voxstage-v2 button:focus-visible,body.voxstage-v2 input:focus-visible{outline:2px solid var(--lime);outline-offset:3px}
+@media(min-width:1600px){body.voxstage-v2 .main{padding:30px 42px 130px}body.voxstage-v2 .menu-content-layout{grid-template-columns:minmax(0,1fr) 340px;gap:36px}body.voxstage-v2 .track{min-height:89px}}
+@media(max-width:1200px){body.voxstage-v2 .main{padding:22px 24px 125px}body.voxstage-v2 .menu-content-layout{gap:20px;grid-template-columns:minmax(0,1fr) 270px}body.voxstage-v2 .menu-sidebar{width:170px;padding:26px 12px}body.voxstage-v2[data-menu-device="pc"] .main{margin-left:170px}body.voxstage-v2 .track .tag{display:none}}
+@media(max-width:1099px){body.voxstage-v2 .menu-content-layout{grid-template-columns:minmax(0,1fr)}body.voxstage-v2 .menu-content-layout>.menu-queue-panel{display:none}body.voxstage-v2 .player{grid-template-columns:minmax(0,1fr) minmax(210px,1fr)}body.voxstage-v2 .player .volumes{display:none}}
+/* C: touch catalogue, including Android landscape. */
+body.voxstage-v2[data-menu-device="phone"] .main{margin:0;padding:calc(16px + env(safe-area-inset-top)) 20px calc(170px + env(safe-area-inset-bottom));max-width:none!important}
+body.voxstage-v2[data-menu-device="phone"] .topbar{position:static;display:flex;justify-content:space-between;margin:0 0 20px;padding:0;background:transparent;border:0}
+body.voxstage-v2[data-menu-device="phone"] .corner-brand{font-size:22px!important;padding:0}
+body.voxstage-v2[data-menu-device="phone"] .menu-header-actions #addTop{width:42px;height:42px;min-height:42px;padding:10px;justify-content:center}
+body.voxstage-v2[data-menu-device="phone"] #addTop>span{display:none}
+body.voxstage-v2[data-menu-device="phone"] .welcome{margin:0 0 18px}
+body.voxstage-v2[data-menu-device="phone"] .menu-section-heading h1{font-size:26px}
+body.voxstage-v2[data-menu-device="phone"] .menu-section-heading .eyebrow,body.voxstage-v2[data-menu-device="phone"] .menu-section-heading p{display:none}
+body.voxstage-v2[data-menu-device="phone"] .menu-content-layout{display:block}
+body.voxstage-v2[data-menu-device="phone"] .menu-content-layout>.menu-queue-panel{display:none}
+body.voxstage-v2[data-menu-device="phone"] .filters{display:flex;flex-wrap:wrap;gap:7px}
+body.voxstage-v2[data-menu-device="phone"] .filters h2.library-heading{display:none}
+body.voxstage-v2[data-menu-device="phone"] .search{flex:1 0 100%;height:44px;margin-bottom:3px;font-size:13px}
+body.voxstage-v2[data-menu-device="phone"] .filter-btn{flex:1;min-width:0;height:34px;padding:0 7px;font-size:10px}
+body.voxstage-v2[data-menu-device="phone"] #showHiddenSongs{flex:0 1 auto}
+body.voxstage-v2[data-menu-device="phone"] .menu-lyric-filters{gap:6px;white-space:nowrap;margin-bottom:18px}
+body.voxstage-v2[data-menu-device="phone"] .menu-lyric-filters button{padding:7px 10px!important;font-size:11px;min-height:34px}
+body.voxstage-v2[data-menu-device="phone"] .grid,body.voxstage-v2[data-menu-device="phone"] .grid.compact-view{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 14px}
+body.voxstage-v2[data-menu-device="phone"] .grid .track{display:block;min-height:0;padding:0;border:0;background:transparent;border-radius:12px;position:relative;box-shadow:none}
+body.voxstage-v2[data-menu-device="phone"] .grid .track .cover{width:100%!important;height:auto!important;min-height:0;aspect-ratio:1;display:grid;border-radius:14px;margin:0;flex:none}
+body.voxstage-v2[data-menu-device="phone"] .track .track-play{opacity:1;right:9px;bottom:9px;width:34px;height:34px;font-size:13px;box-shadow:0 3px 10px #0005}
+body.voxstage-v2[data-menu-device="phone"] .grid .track .track-info{display:block;padding:11px 0 0}
+body.voxstage-v2[data-menu-device="phone"] .track .track-title{font-size:14px;padding-right:29px;line-height:1.4}
+body.voxstage-v2[data-menu-device="phone"] .track .track-artist{font-size:11px;margin-top:4px;padding-right:2px}
+body.voxstage-v2[data-menu-device="phone"] .track .track-meta{display:block;margin:0}
+body.voxstage-v2[data-menu-device="phone"] .track .tag{display:none}
+body.voxstage-v2[data-menu-device="phone"] .track .track-actions{position:absolute;right:-6px;top:calc(100% - 49px);display:block}
+body.voxstage-v2[data-menu-device="phone"] .track .track-actions>[data-fav]{display:none}
+body.voxstage-v2[data-menu-device="phone"] .track .track-menu-toggle{width:32px;height:40px}
+body.voxstage-v2[data-menu-device="phone"] .track:nth-child(2n+1) .track-menu{right:auto;left:0}
+body.voxstage-v2[data-menu-device="phone"] .track .track-menu{width:min(245px,calc(100vw - 40px));min-width:210px}
+body.voxstage-v2[data-menu-device="phone"] .track-menu-wrap{position:relative}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation{position:fixed;z-index:8;left:0;right:0;bottom:0;padding:6px 6px calc(6px + env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(5,minmax(0,1fr));background:#181a20;border-top:1px solid #333744;gap:0}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation .menu-nav-button{display:flex!important;flex-direction:column;justify-content:center;gap:4px;min-height:49px;padding:5px 1px!important;font-size:9px;white-space:normal;text-align:center;border-radius:10px}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation .menu-icon{width:20px;height:20px}
+body.voxstage-v2[data-menu-device="phone"] .player{left:10px!important;right:10px;bottom:calc(70px + env(safe-area-inset-bottom));min-height:64px;padding:8px 11px;grid-template-columns:minmax(0,1fr) auto;border:1px solid #3a414b;border-radius:14px;background:#252a30f5;gap:8px}
+body.voxstage-v2[data-menu-device="phone"] .player .now{height:42px;gap:10px}
+body.voxstage-v2[data-menu-device="phone"] .player .now-title{font-size:11px}
+body.voxstage-v2[data-menu-device="phone"] .player .now-sub{font-size:10px}
+body.voxstage-v2[data-menu-device="phone"] .player .mini-cover{width:40px;height:40px;flex-basis:40px}
+body.voxstage-v2[data-menu-device="phone"] .player .volumes,body.voxstage-v2[data-menu-device="phone"] .player .seek,body.voxstage-v2[data-menu-device="phone"] .player .controls>button:not(#playBtn):not(#fullscreenBtn){display:none!important}
+body.voxstage-v2[data-menu-device="phone"] .player .controls{gap:5px}
+body.voxstage-v2[data-menu-device="phone"] .player .controls #playBtn{width:37px;height:37px;border-radius:50%}
+body.voxstage-v2[data-menu-device="phone"] .player .controls #fullscreenBtn{width:32px;height:37px}
+@media(min-width:650px){body.voxstage-v2[data-menu-device="phone"] .grid,body.voxstage-v2[data-menu-device="phone"] .grid.compact-view{grid-template-columns:repeat(4,minmax(0,1fr))}body.voxstage-v2[data-menu-device="phone"] .main{padding-left:26px;padding-right:26px}}
+/* B: TV session with large remote-control targets. */
+body.voxstage-v2[data-menu-device="tv"] .main{margin:0;max-width:none!important;padding:28px 48px 130px}
+body.voxstage-v2[data-menu-device="tv"] .topbar{display:flex;gap:22px;justify-content:space-between;margin-bottom:30px;min-height:55px}
+body.voxstage-v2[data-menu-device="tv"] .corner-brand{display:flex!important;font-size:26px!important;padding:0;flex:none}
+body.voxstage-v2[data-menu-device="tv"] .menu-navigation{flex:1;justify-content:center;gap:8px}
+body.voxstage-v2[data-menu-device="tv"] .menu-navigation .menu-nav-button{font-size:17px;min-height:48px;padding:10px 17px!important}
+body.voxstage-v2[data-menu-device="tv"] .menu-navigation .menu-nav-button .menu-icon{display:none}
+body.voxstage-v2[data-menu-device="tv"] .menu-utilities .menu-nav-button{width:48px;height:48px;padding:12px!important}
+body.voxstage-v2[data-menu-device="tv"] .menu-utilities .menu-nav-button span{display:none}
+body.voxstage-v2[data-menu-device="tv"] .welcome{display:none}
+body.voxstage-v2[data-menu-device="tv"] .menu-content-layout{display:block}
+body.voxstage-v2[data-menu-device="tv"] .menu-content-layout>.menu-queue-panel{display:none}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-hero{position:relative;isolation:isolate;display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:45px;align-items:center;min-height:330px;padding:30px 38px;border:1px solid #444450;border-radius:23px;overflow:hidden;background:radial-gradient(ellipse at 95% 20%,#5f435d,#22212b 55%,#181b22);margin:0 0 27px}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-backdrop{position:absolute;inset:-20px;z-index:-2;background-position:center;background-size:cover;filter:blur(30px);opacity:.22}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-copy{min-width:0}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-hero .eyebrow{font-size:12px;letter-spacing:2px;margin-bottom:17px}
+body.voxstage-v2[data-menu-device="tv"] #menuTvTitle{font:950 clamp(32px,3.4vw,58px)/1.05 'Nunito',sans-serif;letter-spacing:-1px;margin:0;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+body.voxstage-v2[data-menu-device="tv"] #menuTvArtist{font-size:18px;color:#ced0d9;margin:13px 0 22px}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-actions{display:flex;gap:13px;flex-wrap:wrap}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-actions .btn{font-size:18px;min-height:52px;padding:11px 22px;gap:10px}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-hint{font-size:12px;color:#a7aab8;margin:19px 0 0}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-art{width:260px;height:260px;justify-self:end;display:grid;place-items:center;border:1px solid #ffffff28;box-shadow:0 15px 45px #0006;border-radius:17px;overflow:hidden;background:linear-gradient(130deg,#7e657e,#303e46);font-size:100px;color:#fff8;transform:rotate(3deg)}
+body.voxstage-v2[data-menu-device="tv"] .menu-tv-art img{width:100%;height:100%;object-fit:cover}
+body.voxstage-v2[data-menu-device="tv"] .filters{display:flex;gap:10px;margin-bottom:16px}
+body.voxstage-v2[data-menu-device="tv"] .filters h2.library-heading{flex:1 0 auto;font-size:21px}
+body.voxstage-v2[data-menu-device="tv"] .search{flex:0 1 270px;min-height:46px;font-size:15px}
+body.voxstage-v2[data-menu-device="tv"] .filter-btn{font-size:13px;height:43px}
+body.voxstage-v2[data-menu-device="tv"] .menu-lyric-filters button{font-size:14px;min-height:40px;padding:8px 15px!important}
+body.voxstage-v2[data-menu-device="tv"] .grid,body.voxstage-v2[data-menu-device="tv"] .grid.compact-view{grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+body.voxstage-v2[data-menu-device="tv"] .grid .track{padding:14px;min-height:100px;gap:12px;background:#1c1e26;display:flex;grid-template-columns:none}
+body.voxstage-v2[data-menu-device="tv"] .grid .track .cover{width:65px!important;height:65px!important;min-height:65px;flex:0 0 65px}
+body.voxstage-v2[data-menu-device="tv"] .grid .track .track-info{display:block;padding:0;min-width:0;flex:1}
+body.voxstage-v2[data-menu-device="tv"] .track .track-title{font-size:17px}
+body.voxstage-v2[data-menu-device="tv"] .track .track-artist{font-size:12px;margin-top:5px}
+body.voxstage-v2[data-menu-device="tv"] .track .track-meta{display:flex;margin-top:4px}
+body.voxstage-v2[data-menu-device="tv"] .track .tag,body.voxstage-v2[data-menu-device="tv"] .track [data-fav]{display:none}
+body.voxstage-v2[data-menu-device="tv"] .track .track-play{opacity:1;width:34px;height:34px}
+body.voxstage-v2[data-menu-device="tv"] .track .action-icon{width:37px;height:37px}
+body.voxstage-v2[data-menu-device="tv"] button:focus-visible{outline:3px solid var(--lime);outline-offset:5px;background-color:#30392a;color:var(--text);box-shadow:0 0 0 7px #d4fb6915}
+body.voxstage-v2[data-menu-device="tv"] .player{padding:13px 48px;min-height:88px;grid-template-columns:minmax(0,1fr) auto}
+body.voxstage-v2[data-menu-device="tv"] .player .volumes{display:none}
+body.voxstage-v2[data-menu-device="tv"] .player .controls button{min-width:42px;min-height:42px}
+@media(max-width:1100px){body.voxstage-v2[data-menu-device="tv"] .main{padding:22px 30px 120px}body.voxstage-v2[data-menu-device="tv"] .topbar{gap:15px}body.voxstage-v2[data-menu-device="tv"] .menu-navigation .menu-nav-button{font-size:14px;padding:9px 12px!important}body.voxstage-v2[data-menu-device="tv"] .menu-tv-hero{grid-template-columns:minmax(0,1fr) 220px;padding:25px 30px;min-height:280px;gap:25px}body.voxstage-v2[data-menu-device="tv"] .menu-tv-art{width:215px;height:215px}body.voxstage-v2[data-menu-device="tv"] .menu-tv-actions .btn{font-size:16px;padding:10px 16px}body.voxstage-v2[data-menu-device="tv"] .grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(prefers-reduced-motion:reduce){body.voxstage-v2 *{scroll-behavior:auto!important;transition:none!important}}
+/* Retire fixed-size constraints from the old shared menu. */
+body.voxstage-v2 .menu-utilities .menu-nav-button{width:auto!important;height:auto!important;flex:none}
+body.voxstage-v2 .menu-queue-panel{max-height:calc(100dvh - 340px);overflow:auto;scrollbar-width:thin}
+body.voxstage-v2[data-menu-device="phone"] .welcome{text-align:left;align-items:flex-start}
+body.voxstage-v2[data-menu-device="phone"] .player{grid-template-columns:minmax(0,1fr) auto!important;padding:8px 11px!important;gap:8px!important}
+body.voxstage-v2[data-menu-device="phone"] .player .now{padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important;grid-column:1!important;grid-row:1!important;min-height:0!important}
+body.voxstage-v2[data-menu-device="phone"] .player .transport{grid-column:2!important;grid-row:1!important;width:auto!important;min-width:0}
+body.voxstage-v2[data-menu-device="phone"] .player .controls{display:flex!important;justify-content:flex-end!important}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation #settingsTop{width:auto!important;height:auto!important}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation #settingsTop span{font-size:9px}
+body.voxstage-v2[data-menu-device="tv"] .main{padding:28px 48px 130px!important}
+body.voxstage-v2[data-menu-device="tv"] .player{grid-template-columns:minmax(0,1fr) auto!important;padding:13px 48px!important;gap:20px!important}
+body.voxstage-v2[data-menu-device="tv"] .player .now{padding:0!important;background:transparent!important;border:0!important;box-shadow:none!important;grid-column:1!important;grid-row:1!important}
+body.voxstage-v2[data-menu-device="tv"] .player .transport{grid-column:2!important;grid-row:1!important;min-width:280px}
+body.voxstage-v2[data-menu-device="tv"] .menu-utilities .menu-nav-button{width:48px!important;height:48px!important}
+body.voxstage-v2 #menuQueueDialog .menu-queue-panel{max-height:none}
+body.voxstage-v2[data-menu-device="phone"] .menu-header-actions #openUsageGuide{width:36px;height:42px;padding:8px!important;justify-content:center}
+body.voxstage-v2[data-menu-device="phone"] .menu-header-actions #openUsageGuide span{display:none}
+body.voxstage-v2[data-menu-device="phone"]>.display{z-index:100}
+body.voxstage-v2[data-menu-device="tv"] .menu-utilities #addTop{width:48px;height:48px;padding:12px;justify-content:center}
+body.voxstage-v2[data-menu-device="tv"] .menu-utilities #addTop span{display:none}
+body.voxstage-v2[data-menu-device="phone"] .grid .track .track-info{position:relative}
+body.voxstage-v2[data-menu-device="phone"] .track .track-actions{top:4px}
+body.voxstage-v2[data-menu-device="tv"] .track .track-menu{left:0;right:auto}
+body.voxstage-v2 .menu-nav-button[hidden]{display:none!important}
+body.voxstage-v2 .track .track-menu{z-index:50}
+body.voxstage-v2 .menu-library #filterFavorites{display:none}
+body.voxstage-v2[data-menu-device="phone"] .player .mini-stage,body.voxstage-v2[data-menu-device="tv"] .player .mini-stage{padding:0;border:0;box-shadow:none;background:transparent}
+/* The phone's primary action owns the centre of the bottom navigation. */
+body.voxstage-v2[data-menu-device="phone"] .menu-header-actions{gap:0}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation{align-items:center}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation #addTop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:54px;padding:6px 3px;font:850 10px/1.15 'Nunito',sans-serif;white-space:normal;text-align:center;background:var(--lime);color:#171b12;border-radius:14px;transform:translateY(-4px);box-shadow:0 4px 18px #0004}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation #addTop>span{display:block}
+body.voxstage-v2[data-menu-device="phone"] .menu-navigation #addTop .menu-icon{width:23px;height:23px;stroke-width:2}
+body.voxstage-v2[data-menu-device="phone"] .player{bottom:calc(78px + env(safe-area-inset-bottom))}
+body.voxstage-v2[data-menu-device="phone"] .menu-catalogue-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 15px;color:var(--muted);font-size:11px}
+body.voxstage-v2[data-menu-device="phone"] .menu-catalogue-heading #sortBtn{flex:none;background:transparent;border:0;padding:4px 0;height:28px;font-size:11px}
+body.voxstage-v2[data-menu-device="phone"] .menu-lyric-filters{margin-bottom:10px;padding:3px 0;overflow-x:auto;overflow-y:hidden}
+body.voxstage-v2[data-menu-device="phone"] .menu-lyric-filters #showHiddenSongs{flex:none}
+body.voxstage-v2[data-menu-device="phone"] .menu-lyric-filters #showHiddenSongs[aria-pressed="true"]{color:var(--lime);background:color-mix(in srgb,var(--lime) 10%,#181a1c)}
+/* PC sidebar destinations use the main content area. */
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar #remoteOpen .menu-icon{width:25px!important;height:25px!important;stroke-width:1.9}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar #remoteOpen{width:100%!important;height:auto!important;min-height:45px}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar .menu-nav-button{gap:9px}
+body.voxstage-v2[data-menu-device="pc"] .menu-sidebar #addTop{background:var(--lime);color:#171b12;white-space:nowrap;padding:10px 11px!important;min-height:45px;font-size:12px}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage{min-width:0;padding:12px 0 30px}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-panel{position:static;inset:auto;display:block;padding:0;background:none;backdrop-filter:none;z-index:auto}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-card{width:100%;max-height:none;overflow:visible;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-card-head h2{font:850 32px 'Nunito',sans-serif;margin:10px 0 0}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-layout{grid-template-columns:300px minmax(0,1fr);gap:30px;margin-top:28px}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-qr-box{padding:22px;border-radius:17px}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-qr-box canvas{width:244px;height:244px}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-howto{font-size:13px;line-height:1.7;margin-bottom:24px}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-host-requests{max-height:none}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-layout h3{font-size:16px!important}
+body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-panel-note{font-size:12px;line-height:1.7;margin-top:20px}
+@media(max-width:1099px){body.voxstage-v2[data-menu-device="pc"] .menu-content-layout{grid-template-columns:minmax(0,1fr) 250px}body.voxstage-v2[data-menu-device="pc"] .menu-content-layout>.menu-queue-panel{display:block}body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-layout{grid-template-columns:1fr}body.voxstage-v2[data-menu-device="pc"] #menuConnectionPage .remote-qr-box{justify-self:start;width:300px}}
+/* One scrollbar: only the song list consumes the remaining height. */
+body.voxstage-v2[data-menu-device="pc"] .menu-content-layout>.menu-queue-panel{display:flex;flex-direction:column;max-height:none;overflow:hidden}
+body.voxstage-v2[data-menu-device="pc"] .menu-queue-panel>header,body.voxstage-v2[data-menu-device="pc"] #menuQueueNow,body.voxstage-v2[data-menu-device="pc"] .menu-queue-heading,body.voxstage-v2[data-menu-device="pc"] .menu-queue-note,body.voxstage-v2[data-menu-device="pc"] .menu-queue-footer{flex:none}
+body.voxstage-v2[data-menu-device="pc"] #menuQueueItems{flex:1 1 0;min-height:0;max-height:none;overflow-y:auto;scrollbar-color:#505663 transparent;scrollbar-width:thin}
+body.voxstage-v2[data-menu-device="pc"] #menuQueueItems::-webkit-scrollbar{width:7px}
+body.voxstage-v2[data-menu-device="pc"] #menuQueueItems::-webkit-scrollbar-thumb{background:#505663;border-radius:8px}
+body.voxstage-v2[data-menu-device="pc"] #menuQueueItems::-webkit-scrollbar-track{background:transparent}
+body.voxstage-v2[data-menu-device="pc"] .menu-queue-footer>p{display:none}
+body.voxstage-v2[data-menu-device="pc"] .menu-queue-footer:not(:has(#menuUploads:not([hidden]))){display:none}
+@media(max-height:700px){body.voxstage-v2[data-menu-device="pc"] .menu-now-art{height:80px}body.voxstage-v2[data-menu-device="pc"] .menu-queue-panel{padding:14px}body.voxstage-v2[data-menu-device="pc"] .menu-queue-panel>header{margin-bottom:12px}body.voxstage-v2[data-menu-device="pc"] .menu-queue-heading{margin-top:14px}}
+@media(max-height:600px){body.voxstage-v2[data-menu-device="pc"] .menu-now-art,body.voxstage-v2[data-menu-device="pc"] .menu-now-idle svg,body.voxstage-v2[data-menu-device="pc"] .menu-now-idle>span{display:none}body.voxstage-v2[data-menu-device="pc"] .menu-now-idle{padding:10px}}
+@media(max-width:1099px){body.voxstage-v2[data-menu-device="pc"] .player{grid-template-columns:minmax(0,1fr) minmax(230px,1fr)}}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage{max-width:1100px;margin:20px auto 0}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-panel{position:static;display:block;inset:auto;padding:0;background:transparent;backdrop-filter:none}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-card{width:100%;max-height:none;padding:28px;border:1px solid var(--line);border-radius:20px;background:#191d25;overflow:visible;box-shadow:none}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-card-head h2{font-size:32px}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-layout{grid-template-columns:350px minmax(0,1fr);gap:36px;margin-top:24px}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-qr-box{padding:20px;background:#11161e}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-qr-box canvas{width:306px;height:306px}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-howto{font-size:17px;line-height:1.7}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-panel-note{font-size:14px;line-height:1.6}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-host-requests{max-height:220px}
+/* Pairing occupies the page in native builds and in the Debug format preview. */
+body.voxstage-v2 #menuConnectionPage{width:100%;box-sizing:border-box}
+body.voxstage-v2 #menuConnectionPage .remote-panel{position:static!important;inset:auto!important;display:block!important;width:100%;padding:0!important;background:transparent!important;backdrop-filter:none!important}
+body.voxstage-v2 #menuConnectionPage .remote-card{box-sizing:border-box;width:100%!important;max-width:none!important;max-height:none!important;overflow:visible!important}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage{max-width:none;margin:0;min-height:calc(100dvh - 160px)}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-card{min-height:calc(100dvh - 180px);padding:clamp(24px,3vw,48px)}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-layout{grid-template-columns:minmax(280px,32%) minmax(0,1fr);gap:clamp(28px,4vw,72px)}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage .remote-qr-box canvas{display:block;width:min(100%,380px,39dvh);height:auto;aspect-ratio:1;margin:auto}
+body.voxstage-v2 .menu-navigation :is(#remoteOpen,#syncPcLibrary){width:auto!important;min-width:0;margin:0!important;flex:0 1 auto!important}
+body.voxstage-v2[data-menu-device="tv"] .menu-navigation :is(#remoteOpen,#syncPcLibrary){min-width:max-content!important;flex:0 0 auto!important;padding:10px 17px!important}
+body.voxstage-v2[data-menu-device="tv"] #menuConnectionPage #remoteUrl{font-size:13px;overflow-wrap:anywhere}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage{padding:8px 0 28px}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage .remote-card{padding:20px 0;border:0;border-radius:0;background:transparent;box-shadow:none}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage .remote-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:24px}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage .remote-card-head h2{font-size:28px}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage .remote-qr-box{box-sizing:border-box;justify-self:center;width:min(100%,390px);padding:20px}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage .remote-qr-box canvas{display:block;width:min(100%,330px);height:auto;aspect-ratio:1;margin:auto}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage :is(.remote-howto,.remote-panel-note){font-size:14px;line-height:1.65}
+body.voxstage-v2[data-menu-device="phone"] #menuConnectionPage .remote-host-requests{max-height:none}

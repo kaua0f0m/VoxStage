@@ -19,11 +19,12 @@ class MainActivity : TauriActivity() {
     super.onCreate(savedInstanceState)
     if (VoxStageMediaControls.isTelevision(this)) {
       requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-      onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-        override fun handleOnBackPressed() { VoxStageMediaControls.tvKey("Back") }
-      })
     }
+    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+      override fun handleOnBackPressed() { VoxStageMediaControls.tvKey("Back") }
+    })
     YtDlpBridge.attachContext(applicationContext)
+    VoxStageArchiveDocuments.attach(this)
     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
       ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4201)
     }
@@ -58,9 +59,16 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    VoxStageArchiveDocuments.detach(this)
     VoxStageMicrophone.detach()
     VoxStageMediaControls.detach(this)
     super.onDestroy()
+  }
+
+  @Deprecated("Android document picker callback")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    VoxStageArchiveDocuments.activityResult(requestCode, resultCode, data)
   }
 
   override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

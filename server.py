@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import http.client
 import base64
 import ctypes
@@ -23,11 +22,12 @@ import time
 import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, urlencode, unquote, urlparse
+from urllib.parse import quote, urlencode, unquote, urlparse, parse_qs
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 from uuid import uuid4
-from email.utils import parsedate_to_datetime
+from library_archive import (SONG_FIELDS as ARCHIVE_SONG_FIELDS, MAX_PACKAGE, cleanup as cleanup_archives,
+                             export_library, inspect_package, import_package, package_path)
 from youtube_support import (youtube_access, youtube_request_options, is_youtube_block,
                              youtube_catalog_fields, preserve_youtube_catalog_metadata)
 
@@ -41,15 +41,10 @@ DATA_ROOT.mkdir(parents=True, exist_ok=True)
 MEDIA.mkdir(exist_ok=True)
 SAFE_NAME = re.compile(r"^[a-f0-9-]{36}\.[a-z0-9]{1,8}$", re.I)
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "music.youtube.com", "m.youtube.com", "youtu.be"}
-_alignment_runtime = None
 youtube_jobs = {}
 youtube_jobs_lock = threading.Lock()
 video_download_jobs = {}
 video_download_jobs_lock = threading.Lock()
-local_separation_jobs = {}
-local_separation_jobs_lock = threading.Lock()
-setup_jobs = {}
-setup_jobs_lock = threading.Lock()
 REMOTE_TOKEN = secrets.token_urlsafe(24)
 remote_requests = {}
 remote_requests_lock = threading.Lock()
@@ -62,14 +57,8 @@ remote_microphone = PhoneMicrophone()
 remote_transfers = {}
 remote_transfers_lock = threading.Lock()
 REMOTE_MEDIA_FIELDS = ("source", "inst", "lead", "back", "cover", "background", "backgroundVideo")
-REMOTE_SONG_FIELDS = {
-    "id", "title", "artist", "created", "favorite", "hidden", "separationStatus", "separationEngine", *REMOTE_MEDIA_FIELDS,
-    "syncedLyrics", "plainLyrics", "lyricTrack", "lyricArtist", "lyricProvider", "wordTimings",
-    "parallelWordTimings", "parallelLineStarts", "wordByWordEnabled", "vocalSilenceEnds",
-    "manualVocalSilences", "lyricLineEnds", "backingSyncedLyrics", "backingPlainLyrics",
-    "backingWordTimings", "backingLineEnds", "backingWordByWordEnabled", "backingLyricAdjustments",
-    "backingLyricProvider", "profanityWords", "profanityMarks", "profanityCues", "lyricAdjustments",
-}
+REMOTE_SONG_FIELDS = ARCHIVE_SONG_FIELDS
+
 REMOTE_INCOMING = DATA_ROOT / ".remote-incoming"
 REMOTE_INCOMING.mkdir(exist_ok=True)
 
@@ -95,128 +84,13 @@ def get_lan_ipv4():
     except OSError:
         pass
     return ""
-cover_search_lock = threading.Lock()
-cover_search_cache = {}
-cover_search_next_request = 0
-cover_search_blocked_until = 0
-
-
-class CoverSearchUnavailable(RuntimeError):
-    def __init__(self, message, retry_after=15):
-        super().__init__(message)
-        self.retry_after = retry_after
-
-
-def cover_retry_after(headers):
-    value = (headers or {}).get('Retry-After', '30')
-    try:
-        return max(30, int(value))
-    except (TypeError, ValueError):
-        try:
-            return max(30, math.ceil(parsedate_to_datetime(value).timestamp() - time.time()))
-        except (TypeError, ValueError, OverflowError):
-            return 30
-
-
-def search_covers(query):
-    global cover_search_next_request, cover_search_blocked_until
-    query = str(query or "").strip()[:180]
-    if len(query) < 2:
-        raise ValueError("Digite pelo menos duas letras para buscar capas.")
-    key = " ".join(query.casefold().split())
-    # Coalesce repeated clicks/windows, including a retry after a lost local response.
-    with cover_search_lock:
-        now = time.monotonic()
-        cached = cover_search_cache.get(key)
-        if cached and cached[0] > now:
-            return [dict(item) for item in cached[1]]
-        if now < cover_search_blocked_until:
-            remaining = max(1, math.ceil(cover_search_blocked_until - now))
-            raise CoverSearchUnavailable(f'O serviço de capas está temporariamente indisponível. Aguarde {remaining} segundos para buscar novamente.', remaining)
-        time.sleep(max(0, cover_search_next_request - now))
-        try:
-            results = _search_covers_uncached(query)
-        except CoverSearchUnavailable as error:
-            cover_search_blocked_until = time.monotonic() + error.retry_after
-            raise
-        finally:
-            cover_search_next_request = time.monotonic() + 3.2
-        cover_search_cache[key] = (time.monotonic() + (900 if results else 60), results)
-        if len(cover_search_cache) > 128:
-            del cover_search_cache[next(iter(cover_search_cache))]
-        return [dict(item) for item in results]
-
-
-def _search_covers_uncached(query):
-    # A busca de faixas traz o nome do álbum junto do resultado, resolvendo
-    # músicas como "The Emptiness Machine" para o álbum "From Zero".
-    url = "https://itunes.apple.com/search?" + urlencode({"term": query, "entity": "song", "limit": 16, "country": "br"})
-    request = Request(url, headers={"User-Agent": "VoxStage/0.1 (local music library)", "Accept": "application/json"})
-    for attempt in range(2):
-        try:
-            with urlopen(request, timeout=8) as response:
-                data = response.read(3 * 1024 * 1024 + 1)
-                if len(data) > 3 * 1024 * 1024:
-                    raise ValueError('Resposta grande demais do catálogo de capas.')
-                payload = json.loads(data)
-                tracks = payload.get('results') if isinstance(payload, dict) else None
-                if not isinstance(tracks, list):
-                    raise ValueError('Resposta inválida do catálogo de capas.')
-                break
-        except HTTPError as error:
-            if error.code in {429, 503}:
-                wait = cover_retry_after(error.headers)
-                raise CoverSearchUnavailable(f'O serviço de capas respondeu HTTP {error.code}. Aguarde {wait} segundos antes de tentar novamente.', wait) from None
-            if attempt == 0 and error.code in {502, 504}:
-                time.sleep(3.2)
-                continue
-            raise CoverSearchUnavailable(f'Não consegui consultar o serviço de capas (HTTP {error.code}). Tente novamente em alguns instantes.') from None
-        except (URLError, TimeoutError, ConnectionError, http.client.HTTPException, ValueError):
-            if attempt == 0:
-                time.sleep(3.2)
-                continue
-            raise CoverSearchUnavailable('A conexão com o serviço de capas falhou. Aguarde alguns instantes e tente novamente.') from None
-    results = []
-    seen = set()
-    for track in tracks:
-        if not isinstance(track, dict):
-            continue
-        album = (track.get("collectionName") or "").strip()
-        artwork = track.get("artworkUrl100") or ""
-        album_id = track.get("collectionId")
-        if not album or not artwork or album_id in seen:
-            continue
-        seen.add(album_id)
-        large = re.sub(r"/\d+x\d+(?:bb|-\d+)?(?=\.[a-zA-Z]+$)", "/1200x1200bb", artwork)
-        if large == artwork and "/100x100" in artwork:
-            large = artwork.replace("100x100", "1200x1200", 1)
-        results.append({"id": str(album_id or track.get("trackId", "")), "title": album, "artist": track.get("artistName", "Artista desconhecido"), "track": track.get("trackName", ""), "date": (track.get("releaseDate") or "")[:10], "previewUrl": artwork.replace("http://", "https://", 1), "imageUrl": large.replace("http://", "https://", 1)})
-        if len(results) >= 8:
-            break
-    return results
+from cover_art import CoverSearchUnavailable, retry_after as cover_retry_after
+from cover_art import search_covers
+from cover_art import download_cover as _download_cover
 
 
 def download_cover(url):
-    parsed = urlparse(str(url or ""))
-    host = (parsed.hostname or "").lower()
-    trusted_host = host.endswith(".mzstatic.com") or host.endswith(".itunes.apple.com")
-    if parsed.scheme != "https" or not trusted_host:
-        raise ValueError("Endereço de capa inválido. Faça uma nova busca e tente novamente.")
-    request = Request(url, headers={"User-Agent": "VoxStage/0.1 (local music library)"})
-    with urlopen(request, timeout=30) as response:
-        final_host = (urlparse(response.geturl()).hostname or "").lower()
-        if not (final_host.endswith(".mzstatic.com") or final_host.endswith(".itunes.apple.com")):
-            raise ValueError("O endereço de imagem retornado não é confiável.")
-        content_type = response.headers.get_content_type()
-        if not content_type.startswith("image/"):
-            raise ValueError("O resultado não é uma imagem.")
-        data = response.read(20 * 1024 * 1024 + 1)
-    if not data or len(data) > 20 * 1024 * 1024:
-        raise ValueError("A imagem está vazia ou excede 20 MB.")
-    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/avif": "avif"}.get(content_type, "jpg")
-    name = f"{uuid4()}.{ext}"
-    (MEDIA / name).write_bytes(data)
-    return name
+    return _download_cover(url, MEDIA)
 
 
 def protect_local_secret(secret):
@@ -396,7 +270,7 @@ def youtube_error_message(error):
     return "Não consegui consultar ou baixar esta faixa no YouTube. Confira sua conexão e tente novamente."
 
 
-def youtube_search(query, include_youtube=False):
+def youtube_search(query, include_youtube=False, youtube_only=False):
     try:
         import yt_dlp
     except ImportError as error:
@@ -407,6 +281,8 @@ def youtube_search(query, include_youtube=False):
     options = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "noplaylist": True, "playlistend": 5, "skip_download": True, "proxy": "", **youtube_js_runtime_options()}
     if valid_youtube_url(query):
         targets = [(query, "youtube")]
+    elif youtube_only:
+        targets = [(f"ytsearch8:{query}", "youtube")]
     else:
         # Keep YouTube Music catalog tracks first; optionally append standard video results.
         targets = [(f"https://music.youtube.com/search?q={quote(query)}#songs", "music")]
@@ -857,137 +733,12 @@ def youtube_video_download_worker(job_id, video_url):
                 video_download_jobs[job_id].update({"stage": "error", "message": message, "indeterminate": False})
 
 
-def align_song_words(song_id, synced_lyrics, language="pt", execution="auto"):
-    """Align a known, line-timed lyric against its local lead-vocal stem."""
-    global _alignment_runtime
-    try:
-        import torch
-        import torchaudio
-        import uroman
-    except ImportError as error:
-        raise RuntimeError("Alinhador ausente. Instale com: pip install -r requirements-align.txt") from error
-
-    song = next((item for item in read_library() if item.get("id") == song_id), None)
-    if not song:
-        raise ValueError("Música não encontrada na biblioteca local.")
-    lead_name = song.get("lead")
-    if not lead_name or not SAFE_NAME.fullmatch(lead_name):
-        raise ValueError("Esta música não tem um arquivo de vocal principal válido.")
-    audio_path = MEDIA / lead_name
-    if not audio_path.is_file():
-        raise ValueError("Arquivo de vocal principal não encontrado.")
-
-    lines = []
-    for row in (synced_lyrics or "").splitlines():
-        stamps = re.findall(r"\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]", row)
-        text = re.sub(r"\[[^\]]+\]", "", row).strip()
-        if not text or not stamps:
-            continue
-        for minute, second, fraction in stamps:
-            fraction_ms = int((fraction or "0").ljust(3, "0")[:3])
-            lines.append({"time": (int(minute) * 60 + int(second)) * 1000 + fraction_ms, "text": text})
-    lines.sort(key=lambda item: item["time"])
-    if not lines:
-        raise ValueError("A letra precisa ter tempos por linha para alinhar as palavras.")
-
-    if not re.fullmatch(r"[a-z]{2,3}", language):
-        raise ValueError("Código de idioma inválido.")
-    if execution not in {"auto", "cpu", "gpu"}:
-        raise ValueError("Modo de execução inválido.")
-    if execution == "gpu" and not torch.cuda.is_available():
-        raise RuntimeError("GPU solicitada, mas o PyTorch instalado não oferece suporte CUDA para esta placa. Selecione CPU ou Auto.")
-    device = torch.device("cuda" if execution == "gpu" or (execution == "auto" and torch.cuda.is_available()) else "cpu")
-    cache_key = str(device)
-    if not _alignment_runtime or _alignment_runtime[0] != cache_key:
-        bundle = torchaudio.pipelines.MMS_FA
-        model = bundle.get_model().to(device).eval()
-        _alignment_runtime = (cache_key, bundle, model, bundle.get_tokenizer(), bundle.get_aligner())
-    _, bundle, model, tokenizer, aligner = _alignment_runtime
-    romanizer = uroman.Uroman()
-
-    # MMS-FA usa tokens em alfabeto latino; uroman normaliza escritas diversas.
-    def roman_tokens(text):
-        roman = romanizer.romanize_string(text).lower().replace("’", "'")
-        roman = re.sub(r"[^a-z' ]", " ", roman)
-        return roman.split()
-
-    display_words = []
-    model_tokens = []
-    token_owners = []
-    for line_index, line in enumerate(lines):
-        row = []
-        for display_index, original in enumerate(line["text"].split()):
-            normalized = roman_tokens(original)
-            if not normalized:
-                row.append({"word": original, "start": None, "end": None})
-                continue
-            row.append({"word": original, "start": None, "end": None})
-            model_tokens.extend(normalized)
-            token_owners.extend([(line_index, len(row) - 1)] * len(normalized))
-        display_words.append(row)
-    if not model_tokens:
-        raise ValueError("Não consegui normalizar a escrita desta letra para o alinhador multilíngue.")
-
-    waveform, sample_rate = torchaudio.load(str(audio_path))
-    if waveform.size(0) > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    if sample_rate != bundle.sample_rate:
-        waveform = torchaudio.functional.resample(waveform, sample_rate, bundle.sample_rate)
-    with torch.inference_mode():
-        emission, _ = model(waveform.to(device))
-        token_spans = aligner(emission[0], tokenizer(model_tokens))
-    ratio = waveform.size(1) / emission.size(1) / bundle.sample_rate
-    for owner, span in zip(token_owners, token_spans):
-        if not span:
-            continue
-        line_index, word_index = owner
-        word = display_words[line_index][word_index]
-        start, end = span[0].start * ratio, span[-1].end * ratio
-        word["start"] = start if word["start"] is None else min(word["start"], start)
-        word["end"] = end if word["end"] is None else max(word["end"], end)
-
-    aligned_lines = [{"lineIndex": index, "words": [word for word in words if word["start"] is not None]}
-                     for index, words in enumerate(display_words)]
-    if not any(item["words"] for item in aligned_lines):
-        raise ValueError("O alinhador não encontrou palavras no vocal. Confira se a letra corresponde a esta gravação.")
-    return {"language": "multilíngue MMS-FA", "device": str(device), "wordTimings": aligned_lines}
-
-
 def read_library():
     try:
         data = json.loads(LIBRARY.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
     except (FileNotFoundError, json.JSONDecodeError):
         return []
-
-
-LOCAL_AUDIO_MODEL = "UVR-MDX-NET-Inst_HQ_3.onnx"
-
-
-def local_audio_environment(backend):
-    if backend not in {"cpu", "directml"}:
-        raise ValueError("Escolha CPU ou GPU DirectML.")
-    env_name = ".venv-local-audio-dml" if backend == "directml" else ".venv-local-audio-cpu"
-    candidate = ROOT / env_name / "Scripts" / "python.exe"
-    return candidate if candidate.is_file() else Path(sys.executable)
-
-
-def local_audio_backend_status(backend):
-    interpreter = local_audio_environment(backend)
-    if not interpreter.is_file():
-        return {"installed": False, "backend": backend}
-    probe = "import importlib.util,json; import audio_separator; import onnxruntime as ort; import torch; print(json.dumps({'available': True, 'providers': ort.get_available_providers(), 'torch': torch.__version__}))"
-    if backend == "directml":
-        probe = "import importlib.util,json; import audio_separator; import onnxruntime as ort; import torch_directml; print(json.dumps({'available': torch_directml.is_available() and 'DmlExecutionProvider' in ort.get_available_providers(), 'providers': ort.get_available_providers()}))"
-    try:
-        result = subprocess.run([str(interpreter), "-c", probe], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=35,
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        if result.returncode != 0:
-            return {"installed": False, "backend": backend, "detail": (result.stderr or "").strip()[-280:]}
-        details = json.loads(result.stdout.strip().splitlines()[-1])
-        return {"installed": bool(details.get("available", True)), "backend": backend, **details}
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
-        return {"installed": False, "backend": backend, "detail": str(error)[:180]}
 
 
 def youtube_import_status():
@@ -997,202 +748,6 @@ def youtube_import_status():
                 "denoAvailable": bool(shutil.which("deno"))}
     except ImportError:
         return {"installed": False, "denoAvailable": bool(shutil.which("deno"))}
-
-
-def update_setup_job(job_id, **changes):
-    with setup_jobs_lock:
-        if job_id in setup_jobs:
-            setup_jobs[job_id].update(changes)
-
-
-def run_setup_command(job_id, command, label, progress, cwd=ROOT):
-    update_setup_job(job_id, stage="installing", message=label, progress=progress)
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, encoding="utf-8", errors="replace", bufsize=1,
-                               creationflags=creationflags)
-    tail = []
-    assert process.stdout is not None
-    for line in process.stdout:
-        clean = line.strip()
-        if not clean:
-            continue
-        tail.append(clean[-350:])
-        tail = tail[-8:]
-        update_setup_job(job_id, detail="\n".join(tail))
-    return_code = process.wait()
-    if return_code:
-        detail = "\n".join(tail[-4:])
-        raise RuntimeError(f"{label} (código {return_code}). {detail}"[:900])
-
-
-def setup_install_worker(job_id, feature, backend=None):
-    try:
-        if feature == "local-audio":
-            if backend not in {"cpu", "directml"}:
-                raise ValueError("Escolha CPU ou GPU DirectML.")
-            launcher = shutil.which("py") or str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "Launcher" / "py.exe")
-            if not Path(launcher).is_file():
-                raise RuntimeError("O Python Launcher do Windows (py) não foi encontrado.")
-            env_name = ".venv-local-audio-dml" if backend == "directml" else ".venv-local-audio-cpu"
-            env_dir = ROOT / env_name
-            python = env_dir / "Scripts" / "python.exe"
-            if not python.is_file():
-                run_setup_command(job_id, [launcher, "-3.12", "-m", "venv", str(env_dir)],
-                                  "Criando ambiente isolado com Python 3.12…", 8)
-            if not python.is_file():
-                raise RuntimeError("O ambiente Python 3.12 não foi criado. Confira se Python 3.12 x64 está instalado.")
-            requirements = ROOT / ("requirements-local-audio-dml.txt" if backend == "directml" else "requirements-local-audio-cpu.txt")
-            run_setup_command(job_id, [str(python), "-m", "pip", "install", "--upgrade", "pip"],
-                              "Atualizando o instalador de pacotes…", 20)
-            run_setup_command(job_id, [str(python), "-m", "pip", "install", "-r", str(requirements)],
-                              f"Instalando separação local para {backend.upper()}…", 32)
-            status = local_audio_backend_status(backend)
-            if not status.get("installed"):
-                raise RuntimeError(status.get("detail") or "O ambiente foi instalado, mas o mecanismo não passou na verificação.")
-        elif feature in {"lyrics-align", "youtube"}:
-            requirements = ROOT / ("requirements-align.txt" if feature == "lyrics-align" else "requirements-youtube.txt")
-            label = "Instalando o alinhador multilíngue de letras…" if feature == "lyrics-align" else "Instalando o importador do YouTube…"
-            run_setup_command(job_id, [sys.executable, "-m", "pip", "install", "--upgrade", "pip"], label, 12)
-            run_setup_command(job_id, [sys.executable, "-m", "pip", "install", "-r", str(requirements)], label, 30)
-            if feature == "lyrics-align":
-                probe = subprocess.run([sys.executable, "-c", "import torchaudio; assert hasattr(torchaudio.pipelines, 'MMS_FA')"],
-                                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45,
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                if probe.returncode:
-                    raise RuntimeError((probe.stderr or "MMS-FA não foi encontrado no Torchaudio instalado.")[-700:])
-            elif not youtube_import_status().get("installed"):
-                raise RuntimeError("O pacote yt-dlp não foi encontrado após a instalação.")
-        else:
-            raise ValueError("Recurso de instalação desconhecido.")
-        update_setup_job(job_id, stage="done", message="Instalação concluída.", progress=100)
-    except Exception as error:
-        traceback.print_exc()
-        update_setup_job(job_id, stage="error", message=str(error)[:900], progress=0)
-
-
-def update_local_separation_job(job_id, **changes):
-    with local_separation_jobs_lock:
-        if job_id in local_separation_jobs:
-            local_separation_jobs[job_id].update(changes)
-
-
-def local_audio_separation_worker(job_id, song_id, backend):
-    source_path = None
-    created_files = []
-    try:
-        library = read_library()
-        song = next((item for item in library if item.get("id") == song_id), None)
-        if not song or song.get("separationStatus") != "pending":
-            raise ValueError("Esta música não está aguardando separação local.")
-        source_name = song.get("source", "")
-        if not SAFE_NAME.fullmatch(source_name):
-            raise ValueError("Não encontrei o arquivo da música completa na pasta music.")
-        source_path = MEDIA / source_name
-        if not source_path.is_file():
-            raise ValueError("O arquivo de origem não está mais na pasta music.")
-
-        interpreter = local_audio_environment(backend)
-        status = local_audio_backend_status(backend)
-        if not status.get("installed"):
-            dependency = "CPU" if backend == "cpu" else "GPU DirectML"
-            raise RuntimeError(f"O mecanismo {dependency} não está instalado. Abra Configurações → Configurar recursos opcionais para instalá-lo.")
-
-        free_bytes = shutil.disk_usage(ROOT).free
-        if free_bytes < 2 * 1024**3:
-            raise RuntimeError(f"Há apenas {free_bytes / 1024**3:.1f} GB livres no disco. Libere pelo menos 2 GB e tente novamente.")
-
-        job_dir = Path(tempfile.mkdtemp(prefix=f"voxstage-local-{job_id[:8]}-", dir=str(ROOT)))
-        output_dir = job_dir / "output"
-        output_dir.mkdir()
-        model_dir = ROOT / ".voxstage-models" / "audio-separator"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        log_dir = ROOT / ".voxstage-models" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"separation-{job_id}.log"
-        runner = ROOT / "local_audio_runner.py"
-        command = [str(interpreter), str(runner), str(source_path), str(output_dir), str(model_dir), backend]
-        log_path.write_text("VoxStage · separação local\n", encoding="utf-8")
-        update_local_separation_job(job_id, logPath=str(log_path.relative_to(ROOT)))
-        update_local_separation_job(job_id, stage="processing", message="Baixando o modelo ou preparando o áudio; na primeira execução pode demorar…", progress=4, indeterminate=True)
-        child_env = os.environ.copy()
-        ffmpeg_probe = subprocess.run(
-            [str(interpreter), "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"],
-            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if ffmpeg_probe.returncode:
-            raise RuntimeError("FFmpeg não está disponível no ambiente de áudio. Reinstale a separação local pelo onboarding.")
-        ffmpeg_path = Path(ffmpeg_probe.stdout.strip().splitlines()[-1])
-        if not ffmpeg_path.is_file():
-            raise RuntimeError("O executável FFmpeg do ambiente de áudio não foi encontrado.")
-        # audio-separator invokes the literal command `ffmpeg`; imageio-ffmpeg's
-        # bundled binary has a versioned filename, so expose it under the name
-        # Windows PATH lookup expects. A hard link avoids duplicating the binary.
-        ffmpeg_alias_dir = job_dir / "bin"
-        ffmpeg_alias_dir.mkdir()
-        ffmpeg_alias = ffmpeg_alias_dir / "ffmpeg.exe"
-        try:
-            os.link(ffmpeg_path, ffmpeg_alias)
-        except OSError:
-            shutil.copy2(ffmpeg_path, ffmpeg_alias)
-        child_env["PATH"] = str(ffmpeg_alias_dir) + os.pathsep + child_env.get("PATH", "")
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                   env=child_env, creationflags=creationflags)
-        log_tail = []
-        assert process.stdout is not None
-        with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
-            for line in process.stdout:
-                clean = line.strip()
-                if not clean:
-                    continue
-                log_file.write(clean + "\n")
-                log_file.flush()
-                log_tail.append(clean[-400:])
-                log_tail = log_tail[-12:]
-                if "VOXSTAGE:MODEL" in clean:
-                    update_local_separation_job(job_id, message="Preparando o modelo local…", progress=8, indeterminate=True)
-                elif "VOXSTAGE:SEPARATE" in clean:
-                    update_local_separation_job(job_id, message="Separando vocal e instrumental no computador…", progress=15, indeterminate=True)
-        return_code = process.wait()
-        if return_code != 0:
-            reason = next((line.split("VOXSTAGE:ERROR", 1)[-1].strip() for line in reversed(log_tail) if "VOXSTAGE:ERROR" in line), "")
-            if reason:
-                raise RuntimeError(f"{reason} (log: {log_path.relative_to(ROOT)})")
-            tail = " | ".join(log_tail[-4:])
-            detail = f" Últimas mensagens: {tail}" if tail else " O processo fechou sem registrar mensagens."
-            raise RuntimeError(f"O separador encerrou inesperadamente (código {return_code}). Consulte {log_path.relative_to(ROOT)}.{detail}")
-
-        vocal_output = output_dir / "voxstage-vocals.wav"
-        instrumental_output = output_dir / "voxstage-instrumental.wav"
-        if not vocal_output.is_file() or not instrumental_output.is_file():
-            raise RuntimeError("O modelo terminou sem gerar os dois stems esperados.")
-        update_local_separation_job(job_id, stage="saving", message="Salvando os stems na biblioteca local…", progress=90, indeterminate=False)
-        lead_name, inst_name = f"{uuid4()}.wav", f"{uuid4()}.wav"
-        shutil.copy2(vocal_output, MEDIA / lead_name); created_files.append(MEDIA / lead_name)
-        shutil.copy2(instrumental_output, MEDIA / inst_name); created_files.append(MEDIA / inst_name)
-        latest = read_library()
-        latest_song = next((item for item in latest if item.get("id") == song_id), None)
-        if not latest_song:
-            raise RuntimeError("A música foi removida enquanto a separação acontecia.")
-        latest_song.update({"inst": inst_name, "lead": lead_name, "separationStatus": "complete", "separationEngine": f"local-{backend}"})
-        temp = LIBRARY.with_suffix(".json.tmp")
-        temp.write_text(json.dumps(latest, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(LIBRARY)
-        update_local_separation_job(job_id, stage="done", message="Separação concluída · vocal combinado e instrumental salvos.", progress=100, indeterminate=False)
-    except Exception as error:
-        for file_path in created_files:
-            try:
-                file_path.unlink()
-            except FileNotFoundError:
-                pass
-        traceback.print_exc()
-        update_local_separation_job(job_id, stage="error", message=str(error)[:260], progress=0, indeterminate=False)
-    finally:
-        if "job_dir" in locals():
-            shutil.rmtree(job_dir, ignore_errors=True)
 
 
 def import_remote_transfer(item):
@@ -1233,6 +788,12 @@ def import_remote_transfer(item):
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def end_headers(self):
+        # Shell resources can change between private builds of the same version.
+        if urlparse(self.path).path == "/" or urlparse(self.path).path.lower().endswith((".html", ".js", ".css")):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def _is_loopback(self):
         try:
@@ -1280,6 +841,26 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_error(403)
             return self.send_json({"debug": os.environ.get("VOXSTAGE_DEBUG_BUILD") == "1"})
         path = unquote(urlparse(self.path).path)
+        archive_download = re.fullmatch(r"/api/archives/([a-f0-9-]{36})/download", path)
+        if archive_download:
+            if not self._is_loopback():
+                return self.send_error(403)
+            try:
+                file = package_path(DATA_ROOT, archive_download.group(1))
+                with file.open("rb") as source:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    filename = parse_qs(urlparse(self.path).query).get("filename", ["VoxStage.voxstage.zip"])[0]
+                    if len(filename)>180 or any(ord(char)<32 or char in "/\\" for char in filename) or not filename.endswith(".voxstage.zip"):
+                        filename = "VoxStage.voxstage.zip"
+                    self.send_header("Content-Disposition", "attachment; filename=VoxStage.voxstage.zip; filename*=UTF-8''" + quote(filename))
+                    self.send_header("Content-Length", str(file.stat().st_size))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    shutil.copyfileobj(source, self.wfile, 1024 * 1024)
+                return
+            except (ValueError, FileNotFoundError):
+                return self.send_json({"error":"A exportação expirou. Prepare o arquivo novamente."}, 404)
         if path in {"/remote", "/remote/"}:
             remote_page = (ROOT / "remote.html").read_bytes()
             self.send_response(200)
@@ -1394,50 +975,8 @@ class Handler(SimpleHTTPRequestHandler):
                 commands = list(remote_commands)
                 remote_commands.clear()
             return self.send_json({"commands": commands})
-        if path == "/api/local-audio/status":
-            backend = "directml" if urlparse(self.path).query == "backend=directml" else "cpu"
-            return self.send_json(local_audio_backend_status(backend))
         if path == "/api/youtube/status":
             return self.send_json(youtube_import_status())
-        setup_job_match = re.fullmatch(r"/api/setup/jobs/([a-f0-9-]{36})", path, re.I)
-        if setup_job_match:
-            with setup_jobs_lock:
-                job = setup_jobs.get(setup_job_match.group(1))
-                return self.send_json(dict(job) if job else {"stage": "missing", "message": "Instalação não encontrada."}, 200 if job else 404)
-        if path == "/api/local/separations":
-            with local_separation_jobs_lock:
-                jobs = [dict(job) for job in local_separation_jobs.values() if job.get("stage") not in {"done", "error"}]
-            return self.send_json({"jobs": jobs})
-        local_job_match = re.fullmatch(r"/api/local/separations/([a-f0-9-]{36})", path, re.I)
-        if local_job_match:
-            with local_separation_jobs_lock:
-                job = local_separation_jobs.get(local_job_match.group(1))
-                return self.send_json(dict(job) if job else {"stage": "missing", "message": "Processamento não encontrado."}, 200 if job else 404)
-        if path == "/api/align/status":
-            try:
-                import torch
-                available = bool(torch.cuda.is_available())
-                try:
-                    import torchaudio
-                    mms_fa_available = hasattr(torchaudio.pipelines, "MMS_FA")
-                    torchaudio_version = str(torchaudio.__version__)
-                except ImportError:
-                    mms_fa_available = False
-                    torchaudio_version = None
-                return self.send_json({
-                    "installed": True,
-                    "torch": str(torch.__version__),
-                    "available": available,
-                    "mmsFaAvailable": mms_fa_available,
-                    "torchaudio": torchaudio_version,
-                    "device": torch.cuda.get_device_name(0) if available else None,
-                    "backend": "ROCm" if getattr(torch.version, "hip", None) else "CUDA" if getattr(torch.version, "cuda", None) else "CPU",
-                    "runtime": getattr(torch.version, "hip", None) or getattr(torch.version, "cuda", None),
-                })
-            except ImportError:
-                return self.send_json({"installed": False, "available": False, "backend": "none"})
-            except Exception as error:
-                return self.send_json({"installed": True, "available": False, "backend": "unknown", "error": str(error)[:180]})
         if path == "/api/mvsep/config":
             return self.send_json({"configured": bool(get_mvsep_token())})
         if path == "/api/mvsep/models":
@@ -1550,6 +1089,44 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._allow_network_route():
             return self.send_error(403, "LAN access is limited to the paired remote control")
         parsed_path = urlparse(self.path).path
+        if parsed_path in {"/api/archives/export", "/api/archives/inspect", "/api/archives/import"}:
+            if not self._is_loopback():
+                return self.send_error(403)
+            incoming = None
+            try:
+                if parsed_path.endswith("/inspect"):
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= MAX_PACKAGE + 64 * 1024 * 1024:
+                        raise ValueError("O pacote está vazio ou ultrapassa o limite de 128 GB.")
+                    directory = cleanup_archives(DATA_ROOT)
+                    if shutil.disk_usage(directory).free < length + 32 * 1024 * 1024:
+                        raise ValueError("Não há espaço livre para receber o pacote.")
+                    package_id = str(uuid4())
+                    incoming = package_path(DATA_ROOT, package_id)
+                    with incoming.open("xb") as output:
+                        remaining = length
+                        while remaining:
+                            chunk = self.rfile.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise ValueError("O envio do pacote foi interrompido. Tente novamente.")
+                            output.write(chunk)
+                            remaining -= len(chunk)
+                    with LIBRARY_LOCK:
+                        result = inspect_package(DATA_ROOT, package_id)
+                else:
+                    request = self._read_remote_json(2 * 1024 * 1024)
+                    with LIBRARY_LOCK:
+                        if parsed_path.endswith("/export"):
+                            version = json.loads((ROOT / "build-info.json").read_text(encoding="utf-8"))["version"]
+                            result = export_library(DATA_ROOT, request.get("songId"), request.get("preferences"), version)
+                            result["downloadUrl"] = f"/api/archives/{result['id']}/download?filename=" + quote(result["filename"])
+                        else:
+                            result = import_package(DATA_ROOT, request.get("id"), request.get("replaceExisting") is True)
+                return self.send_json(result)
+            except (ValueError, TypeError, OSError, json.JSONDecodeError) as error:
+                if incoming:
+                    incoming.unlink(missing_ok=True)
+                return self.send_json({"error":str(error) or "Não consegui processar o pacote."}, 400)
         if parsed_path == "/api/about/open-link":
             if not self._is_loopback():
                 return self.send_error(403)
@@ -1754,63 +1331,6 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(result)
             except (ValueError, json.JSONDecodeError) as error:
                 return self.send_json({"error": str(error)}, 400)
-        if parsed_path == "/api/setup/install":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if length <= 0 or length > 16 * 1024:
-                    return self.send_json({"error": "Pedido vazio ou grande demais."}, 413)
-                request = json.loads(self.rfile.read(length))
-                feature = request.get("feature")
-                backend = request.get("backend")
-                if feature not in {"local-audio", "lyrics-align", "youtube"}:
-                    return self.send_json({"error": "Escolha um recurso válido."}, 400)
-                if feature == "local-audio" and backend not in {"cpu", "directml"}:
-                    return self.send_json({"error": "Escolha CPU ou GPU DirectML."}, 400)
-                with setup_jobs_lock:
-                    active = next((job for job in setup_jobs.values() if job.get("stage") in {"starting", "installing"}), None)
-                    if active:
-                        return self.send_json({"error": "Outra instalação já está em andamento."}, 409)
-                    job_id = str(uuid4())
-                    setup_jobs[job_id] = {"id": job_id, "feature": feature, "backend": backend,
-                                          "stage": "starting", "message": "Preparando a instalação…", "progress": 1}
-                threading.Thread(target=setup_install_worker, args=(job_id, feature, backend), daemon=True).start()
-                return self.send_json({"id": job_id, "stage": "starting"}, 202)
-            except (ValueError, json.JSONDecodeError) as error:
-                return self.send_json({"error": str(error)}, 400)
-            except Exception as error:
-                traceback.print_exc()
-                return self.send_json({"error": f"Não consegui iniciar a instalação: {str(error)[:180]}"}, 500)
-        if parsed_path == "/api/local/separations":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if length <= 0 or length > 64 * 1024:
-                    return self.send_json({"error": "Pedido vazio ou grande demais."}, 413)
-                request = json.loads(self.rfile.read(length))
-                song_id = str(request.get("songId", ""))
-                if not re.fullmatch(r"[a-f0-9-]{36}", song_id, re.I):
-                    return self.send_json({"error": "Selecione uma música válida."}, 400)
-                backend = request.get("backend", "cpu")
-                if backend not in {"cpu", "directml"}:
-                    return self.send_json({"error": "Escolha CPU ou GPU DirectML."}, 400)
-                with local_separation_jobs_lock:
-                    active = next((job for job in local_separation_jobs.values()
-                                   if job.get("songId") == song_id and job.get("stage") not in {"done", "error"}), None)
-                    if active:
-                        return self.send_json(dict(active), 202)
-                    if any(job.get("stage") not in {"done", "error"} for job in local_separation_jobs.values()):
-                        return self.send_json({"error": "Já há uma separação local em andamento. Espere ela terminar antes de iniciar outra."}, 409)
-                    job_id = str(uuid4())
-                    local_separation_jobs[job_id] = {"id": job_id, "songId": song_id, "stage": "starting",
-                                                     "message": "Preparando a separação local…", "progress": 1,
-                                                     "indeterminate": True, "backend": backend}
-                threading.Thread(target=local_audio_separation_worker,
-                                 args=(job_id, song_id, backend), daemon=True).start()
-                return self.send_json({"id": job_id, "songId": song_id, "stage": "starting"}, 202)
-            except (ValueError, json.JSONDecodeError) as error:
-                return self.send_json({"error": str(error)}, 400)
-            except Exception as error:
-                traceback.print_exc()
-                return self.send_json({"error": f"Não consegui iniciar a separação local: {str(error)[:180]}"}, 500)
         if parsed_path in {"/api/mvsep/config", "/api/mvsep/models", "/api/youtube/search", "/api/youtube/metadata", "/api/youtube/separations", "/api/mvsep/separations", "/api/youtube/video-downloads", "/api/covers/search", "/api/covers/download"}:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -1818,7 +1338,7 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({"error": "Requisição vazia ou grande demais."}, 413)
                 request = json.loads(self.rfile.read(length))
                 if parsed_path == "/api/covers/search":
-                    return self.send_json({"results": search_covers(request.get("query", ""))})
+                    return self.send_json({"results": search_covers(request.get("query", ""), request.get("provider", "archive"), request.get("artist", ""))})
                 if parsed_path == "/api/covers/download":
                     return self.send_json({"name": download_cover(request.get("url", ""))}, 201)
                 if parsed_path == "/api/youtube/metadata":
@@ -1850,7 +1370,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if parsed_path == "/api/mvsep/models":
                     return self.send_json({"models": mvsep_models(force_refresh=True)})
                 if parsed_path == "/api/youtube/search":
-                    return self.send_json({"results": youtube_search(request.get("query", ""), bool(request.get("includeYoutube", False)))})
+                    return self.send_json({"results": youtube_search(request.get("query", ""), bool(request.get("includeYoutube", False)), bool(request.get("youtubeOnly", False)))})
                 if not get_mvsep_token():
                     return self.send_json({"error": "Configure a chave da API MVSep nas configurações primeiro."}, 400)
                 if parsed_path == "/api/mvsep/separations":
@@ -1893,22 +1413,6 @@ class Handler(SimpleHTTPRequestHandler):
                 if parsed_path in {"/api/youtube/search", "/api/youtube/metadata"}:
                     return self.send_json({"error": youtube_error_message(error)}, 503)
                 return self.send_json({"error": message}, 500)
-        align_match = re.fullmatch(r"/api/align/([a-f0-9-]{36})", parsed_path, re.I)
-        if align_match:
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if length <= 0 or length > 2 * 1024 * 1024:
-                    return self.send_error(413, "Invalid alignment request size")
-                request = json.loads(self.rfile.read(length))
-                result = align_song_words(align_match.group(1), request.get("syncedLyrics", ""), request.get("language", "pt"), request.get("execution", "auto"))
-                return self.send_json(result)
-            except (ValueError, json.JSONDecodeError) as error:
-                return self.send_json({"error": str(error)}, 400)
-            except RuntimeError as error:
-                return self.send_json({"error": str(error)}, 503)
-            except Exception as error:
-                traceback.print_exc()
-                return self.send_json({"error": f"Falha no alinhamento: {error}"}, 500)
         if parsed_path != "/api/library":
             return self.send_error(404)
         try:
@@ -1967,6 +1471,42 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_HEAD()
 
 
+def watch_desktop_parent(httpd):
+    """Stop this server if the desktop process disappears, even after a crash."""
+    value = os.environ.get("VOXSTAGE_PARENT_PID", "")
+    if not value.isdigit() or not 0 < int(value) < 2**32 or int(value) == os.getpid():
+        return
+    parent_pid = int(value)
+
+    def watch():
+        if os.name == "nt":
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            # SYNCHRONIZE only: the handle identifies this exact parent despite PID reuse.
+            handle = kernel.OpenProcess(0x00100000, False, parent_pid)
+            if not handle:
+                if ctypes.get_last_error() == 87:  # Parent exited before we opened it.
+                    httpd.shutdown()
+                return
+            try:
+                exited = kernel.WaitForSingleObject(handle, 0xFFFFFFFF) == 0
+            finally:
+                kernel.CloseHandle(handle)
+            if not exited:
+                return
+        else:
+            while os.getppid() == parent_pid:
+                time.sleep(1)
+        httpd.shutdown()
+
+    threading.Thread(target=watch, name="desktop-parent-watch", daemon=True).start()
+
+
 if __name__ == "__main__":
     host = os.environ.get("VOXSTAGE_HOST", "0.0.0.0")
     try:
@@ -1977,7 +1517,9 @@ if __name__ == "__main__":
     lan_url = f"http://{get_lan_ipv4()}:{port}/remote" if host in {"0.0.0.0", ""} else ""
     print(f"VoxStage em http://localhost:{port}" + (f" (celular na mesma rede: {lan_url})" if lan_url else ""))
     try:
-        ThreadingHTTPServer(address, Handler).serve_forever()
+        with ThreadingHTTPServer(address, Handler) as httpd:
+            watch_desktop_parent(httpd)
+            httpd.serve_forever()
     except OSError as error:
         print(f"Não foi possível iniciar em {address[0]}:{address[1]}: {error}")
         input("Pressione Enter para fechar...")

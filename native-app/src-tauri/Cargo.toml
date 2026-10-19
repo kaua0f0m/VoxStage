@@ -1,9 +1,12 @@
 [package]
 name = "voxstage-native"
-version = "1.1.2"
+version = "2.0.0"
 description = "VoxStage native application shell"
 authors = ["VoxStage"]
 edition = "2021"
+
+[features]
+desktop-standalone = []
 
 [lib]
 name = "voxstage_native"

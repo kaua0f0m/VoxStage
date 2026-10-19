@@ -95,7 +95,7 @@ async function main() {
     await page.locator('#starColorTest').evaluate(node=>node.remove());
     await page.evaluate(()=>settingsDialog.classList.remove('show'));
     assert.equal(await page.locator('.settings-tabs').evaluate(node=>getComputedStyle(node).flexDirection),'column');
-    assert.equal(await page.locator('[data-settings-tab="local"]').getAttribute('hidden'),null);
+    assert.equal(await page.locator('[data-settings-tab="local"]').count(),0);
     assert.doesNotMatch(await page.locator('#modal').textContent(),/próxima etapa|disponíveis em breve/);
     await page.locator(`[data-play="${id}"]`).click();
     await page.waitForFunction(()=>current?.buffers?.Inst);
@@ -183,9 +183,11 @@ async function main() {
     assert.equal(blockedRequests,1,'A bot block must stop further automatic video queries');
     await page.unroute('**/api/youtube/metadata');
     await page.locator('#titleInput').fill('Capa');
-    let coverRequests=0, coverMode='recover';
+    await page.evaluate(()=>{$('artworkProvider').value='itunes';});
+    let coverRequests=0, coverMode='recover',coverBody=null;
     const coverResult={title:'Capa recuperada',artist:'Artista',previewUrl:'/cover.svg',imageUrl:'https://example.test/cover.jpg'};
     await page.route('**/api/covers/search',async route=>{
+      coverBody=route.request().postDataJSON();
       coverRequests++;
       if(coverMode==='recover'&&coverRequests===1||coverMode==='offline')return route.abort('connectionreset');
       if(coverMode==='unavailable')return route.fulfill({status:503,json:{error:'Serviço temporariamente indisponível. Aguarde 2 segundos.',retryAfter:2}});
@@ -213,6 +215,44 @@ async function main() {
     await page.evaluate(()=>{searchArtwork();searchArtwork();searchArtwork();});
     await page.locator('.artwork-result').waitFor();
     assert.equal(coverRequests,1,'Repeated clicks share the current cover search');
+    await page.evaluate(()=>{artworkRetryUntil.archive=Date.now()+30000;refreshArtworkSearchButton();});
+    await page.locator('#artworkProvider').selectOption('itunes');
+    await page.waitForFunction(()=>!document.getElementById('artworkSearch').disabled);
+    assert.equal(coverBody.provider,'itunes','An Archive outage must not block iTunes');
+    let artworkYoutubeRequests=[];
+    await page.route('**/api/youtube/search',route=>{
+      artworkYoutubeRequests.push(route.request().postDataJSON());
+      return route.fulfill({json:{results:[{url:'https://youtu.be/2CnxonDrhdE',title:'Outra faixa',artist:'Outro artista'}]}});
+    });
+    await page.locator('#artworkProvider').selectOption('youtube');
+    await page.locator('.artwork-result').waitFor();
+    assert.equal(await page.locator('#artworkArtist').count(),0,'Cover search uses only the title');
+    assert.equal(artworkYoutubeRequests.at(-1).query,'Capa','Artwork uses the existing music search without requiring a URL');
+    assert.equal(coverBody.provider,'itunes','YouTube artwork must not use the separate cover-search endpoint');
+    await page.locator('#artworkQuery').fill('Será - Legião Urbana');
+    await page.locator('#artworkSearch').click();
+    await page.waitForFunction(()=>!artworkSearchBusy);
+    assert.equal(artworkYoutubeRequests.length,2,'Music catalog results must not replace a standard YouTube thumbnail search');
+    assert.equal(artworkYoutubeRequests.at(-1).youtubeOnly,true);
+    assert.equal(artworkYoutubeRequests.at(-1).includeYoutube,true);
+    await page.evaluate(()=>{youtubeSearchResults=[{url:'https://youtu.be/abcdefghijk',title:'Official video',source:'YouTube'},{url:'https://music.youtube.com/watch?v=abcdefghijL',title:'Catalog cover',source:'YouTube Music'}];});
+    await page.locator('#artworkSearch').click();
+    await page.waitForFunction(()=>!artworkSearchBusy);
+    assert.equal(await page.locator('.artwork-result').count(),1);
+    assert.match(await page.locator('#artworkResults').textContent(),/Official video/);
+    assert.doesNotMatch(await page.locator('#artworkResults').textContent(),/Catalog cover/);
+    await page.locator('#youtubeQuery').fill('Something typed but never searched');
+    await page.locator('#artworkSearch').click();
+    await page.waitForFunction(()=>!document.getElementById('artworkSearch').disabled);
+    assert.equal(artworkYoutubeRequests.length,2,'Reusing standard video results depends on the completed search, not the current input');
+    await page.locator('#artworkQuery').fill('Outra faixa');
+    await page.locator('#artworkSearch').click();
+    await page.waitForFunction(()=>!document.getElementById('artworkSearch').disabled);
+    assert.equal(artworkYoutubeRequests.at(-1).query,'Outra faixa');
+    await page.unroute('**/api/youtube/search');
+    await page.evaluate(()=>{artworkRetryUntil.archive=0;});
+    await page.locator('#artworkProvider').selectOption('itunes');
+    await page.waitForFunction(()=>!document.getElementById('artworkSearch').disabled);
     await page.locator('#artworkClose').click();
     const staleCovers=await page.evaluate(async()=>{
       const original=api, pending={};
@@ -241,6 +281,48 @@ async function main() {
     });
     assert.equal(await page.locator('#titleInput').inputValue(),'Título escolhido');
     assert.equal(await page.locator('#artistInput').inputValue(),'Cantor escolhido');
+    const automaticArtwork=await page.evaluate(async()=>{
+      const original=api,originalId=activeUploadDraftId,originalQuery=$('youtubeQuery').value;
+      const item={url:'https://music.youtube.com/watch?v=abcdefghijk',title:'Faixa automática',artist:'Artista automático',album:'Álbum automático'};
+      let downloads=0,searches=0,resolveDownload;
+      api=(url,options)=>{
+        if(url==='/api/covers/download'){downloads++;return new Promise(resolve=>{resolveDownload=resolve;});}
+        if(url==='/api/youtube/search'){searches++;return Promise.resolve({results:[]});}
+        return original(url,options);
+      };
+      try {
+        activateUploadDraft('test-auto-artwork');
+        prefillYoutubeDraft(item,activeUploadDraftId);
+        const draft=uploadDrafts.get(activeUploadDraftId);
+        if(draft.pendingAttachments!==1)throw new Error('Save must wait for the automatic image');
+        resolveDownload({name:'automatic-youtube.jpg'});
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(draft.files.find(file=>file.role==='cover')?.name!=='automatic-youtube.jpg')throw new Error('Selected track thumbnail was not attached');
+        if(draft.pendingAttachments!==0)throw new Error('Image attachment remained pending');
+        const results=await searchYoutubeArtwork($('titleInput').value);
+        if(results.length||searches!==1)throw new Error('A selected Music track must not bypass the standard video search');
+        draft.youtubeSelection={...draft.youtubeSelection,source:'YouTube',url:'https://www.youtube.com/watch?v=abcdefghijk'};
+        const standard=await searchYoutubeArtwork($('titleInput').value);
+        if(standard[0]?.imageUrl!=='https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg'||searches!==1)throw new Error('Selected standard video is available without another search');
+        prefillYoutubeDraft(item,activeUploadDraftId);
+        if(downloads!==1)throw new Error('Repeated metadata must not redownload the thumbnail');
+        draft.files=[{name:'manual-cover.jpg',role:'cover'}];chosenFiles=draft.files;
+        prefillYoutubeDraft({...item,url:'https://youtu.be/abcdefghijL'},activeUploadDraftId);
+        if(downloads!==1||draft.files[0].name!=='manual-cover.jpg')throw new Error('Manual artwork must be preserved');
+        draft.files=[];chosenFiles=draft.files;
+        const pendingItem={...item,url:'https://youtu.be/abcdefghijM'};
+        prefillYoutubeDraft(pendingItem,activeUploadDraftId);
+        draft.youtubeSelection={...item,url:'https://youtu.be/abcdefghijN'};
+        resolveDownload({name:'outdated-thumbnail.jpg'});
+        await new Promise(resolve=>setTimeout(resolve,0));
+        if(draft.files.length)throw new Error('An old track thumbnail must not attach to a new selection');
+        if(youtubeArtworkResult({url:'https://example.test/watch?v=abcdefghijk'}))throw new Error('External sites must not be interpreted as YouTube');
+        return {downloads,searches};
+      } finally {
+        api=original;activateUploadDraft(originalId);uploadDrafts.delete('test-auto-artwork');persistUploadDrafts();$('youtubeQuery').value=originalQuery;
+      }
+    });
+    assert.deepEqual(automaticArtwork,{downloads:2,searches:1});
     await page.evaluate(()=>{
       updateUploadActivity({id:'received',draftId:activeUploadDraftId,stage:'done',files:[
         {name:'received-inst.wav',role:'inst'},{name:'received-lead.wav',role:'lead'}]},true,'',false);
@@ -328,6 +410,8 @@ async function main() {
         if(command==='mobile_mvsep_get_config')return {configured:true};
         if(command==='mobile_mvsep_save_config')return {configured:true};
         if(command==='mobile_mvsep_models')return {models:[{id:12,name:'Karaoke',fields:[]}]};
+        if(command==='mobile_cover_search')return {results:[{title:'Capa comunitária',artist:'Artista',provider:'Cover Art Archive',previewUrl:'/cover.svg',imageUrl:'https://example.test/cover.jpg'}]};
+        if(command==='mobile_cover_download')return {name:'native-cover.jpg'};
         if(command==='mobile_remote_state')return {hostType:'tv',playing:false};
         if(command==='mobile_remote_send_mvsep_key')return {configured:true};
         if(command==='mobile_mvsep_start_song')return {id:'cccccccc-cccc-cccc-cccc-cccccccccccc',stage:'preparing'};
@@ -349,10 +433,10 @@ async function main() {
     await mobile.screenshot({path:path.join(artifacts,'about-android.png')});
     await mobile.locator('[data-settings-tab="playback"]').click();
     await mobile.evaluate(()=>settingsDialog.classList.remove('show'));
-    assert.equal(await mobile.locator('[data-settings-tab="local"]').evaluate(node=>node.hidden),true);
+    assert.equal(await mobile.locator('[data-settings-tab="local"]').count(),0);
     assert.equal(await mobile.locator('.mobile-ytdlp-settings').count(),0);
-    assert.equal(await mobile.locator('#syncPcLibrary').textContent(),'▣ Conectar ao VoxStage');
-    await mobile.evaluate(()=>document.querySelector('.setup-wizard').classList.add('show'));
+    assert.equal(await mobile.locator('#syncPcLibrary').textContent(),'Conectar');
+    await mobile.evaluate(()=>VoxStageOnboarding.open());await mobile.locator('#setupWizardNext').click();
     await mobile.locator('#mobileMvsepHelp').click();
     assert.equal(await mobile.locator('.mvsep-help-dialog').isVisible(),true);
     await mobile.screenshot({path:path.join(artifacts,'android-key-help.png')});

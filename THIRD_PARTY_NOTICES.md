@@ -6,6 +6,21 @@ The VoxStage wordmark uses Nunito, bundled locally under the SIL Open Font Licen
 1.1. Font and license: `fonts/Nunito-Variable.ttf`, `fonts/OFL-Nunito.txt`.
 Source: https://github.com/google/fonts/tree/main/ofl/nunito
 
+## Manrope
+
+The original lyric font, Manrope, is bundled locally under the SIL Open Font
+License 1.1. Font and license: `fonts/Manrope-Variable.ttf`, `fonts/OFL-Manrope.txt`.
+Source: https://github.com/google/fonts/tree/main/ofl/manrope
+
+## Additional interface and lyric fonts
+
+DM Sans, Outfit and Rubik are bundled under the SIL Open Font License 1.1.
+Font files and licenses are in `fonts/` (`DMSans-Variable.ttf`,
+`Outfit-Variable.ttf`, `Rubik-Variable.ttf` and their `OFL-*.txt` files).
+Sources: https://github.com/google/fonts/tree/main/ofl/dmsans,
+https://github.com/google/fonts/tree/main/ofl/outfit,
+https://github.com/google/fonts/tree/main/ofl/rubik.
+
 ## Windows portable runtime
 
 The Windows portable release bundles CPython 3.13 (its `LICENSE.txt` is included),
@@ -19,14 +34,6 @@ Its upstream build and source references are available from
 ## SoundTouchJS
 
 Real-time tempo and pitch use the AudioWorklet processor from [`@soundtouchjs/audio-worklet` 2.1.1](https://github.com/cutterbl/SoundTouchJS), copyright Steve “Cutter” Blades, distributed under MPL-2.0. The modified source, license and archive integrity are included in `audio/vendor`. VoxStage adds output buffering, tail drainage, delay metrics and processor shutdown; the pitch/stretch algorithms are unchanged.
-
-## Audio Separator
-
-Optional local separation is powered by [`python-audio-separator`](https://github.com/nomadkaraoke/python-audio-separator), distributed under the MIT License. Its project documentation requests that applications integrating UVR models credit UVR and its developers.
-
-## UVR model
-
-VoxStage downloads `UVR-MDX-NET-Inst_HQ_3.onnx` on demand from the model source used by Audio Separator. The model is not bundled with VoxStage. Review the upstream model and project terms before redistributing model files or publishing a packaged release.
 
 ## Android yt-dlp integration
 

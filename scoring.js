@@ -59,7 +59,7 @@
   function portrait() { return host.mobile&&!host.tv&&matchMedia('(orientation: portrait)').matches; }
   function lyricsAllowed() {
     const song=host.state().song;
-    return portrait() || [song?.wordTimings,song?.backingWordTimings].some(rows=>Array.isArray(rows)&&rows.some(row=>row.words?.some(cue=>cue.start!=null&&cue.end!=null&&Number.isFinite(Number(cue.start))&&Number(cue.end)>Number(cue.start))));
+    return portrait() || [song?.wordTimings,song?.parallelWordTimings,song?.backingWordTimings].some(rows=>Array.isArray(rows)&&rows.some(row=>row.words?.some(cue=>cue.start!=null&&cue.end!=null&&Number.isFinite(Number(cue.start))&&Number(cue.end)>Number(cue.start))));
   }
   function layoutLyrics() {
     const vertical=portrait(), allowed=lyricsAllowed(), row=byId('scoreLaneLyrics'), lyrics=byId('lyrics');
@@ -373,7 +373,7 @@
       const node = row.children[index]; if (!node) return;
       // A line-only lyric stays readable at the cursor; explicit word cues scroll.
       const left = cue.line && cue.start <= time && cue.end > time ? x(time) : x(cue.start);
-      const next = lyricCues.slice(index+1).find(other => other.backing === cue.backing);
+      const next = lyricCues.slice(index+1).find(other => other.backing === cue.backing && (other.voice||'lead')===(cue.voice||'lead'));
       const limit = cue.line ? width : Math.min(width, x(Math.max(cue.end, next?.start ?? cue.end)) - 6);
       node.style.left = `${left * scale}px`;
       node.style.maxWidth = `${Math.max(12, (limit-left)*scale)}px`;

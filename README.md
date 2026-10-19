@@ -14,6 +14,15 @@
 Local karaoke for Windows, Android phones and Android / Google TV. The same
 Android application detects a TV and adapts its interface and remote controls.
 
+## Novidades da 2.0
+
+- Novas interfaces para PC, Android e TV, com importação guiada, fila e navegação por controle remoto.
+- Voz 1, Voz 2 e Backing com edição e sincronização independentes, além de duetos em gradiente.
+- Capas pelo Apple/iTunes, Cover Art Archive e miniaturas do YouTube; exportação e importação da biblioteca em `.voxstage.zip`.
+- Guia de uso, introdução guiada e personalização das fontes e cores do palco.
+
+Veja todas as mudanças no [changelog](CHANGELOG.md).
+
 # Features
 
 Plataformas
@@ -55,7 +64,6 @@ Downloads e processamento
 - [x] Download de vídeos no Windows.
 - [x] Separação na nuvem pelo MVSEP usando a chave API do usuário.
 - [x] Separação pelo MVSEP de músicas completas já salvas na biblioteca.
-- [x] Separação local no Windows, com instalação dos modelos necessários. (experimental)
 - [x] Orientações para obter e cadastrar uma chave MVSEP.
 - [x] Tela de envios e processamentos em progresso, permitindo sair do formulário e voltar depois.
 - [x] Notificações de processamento no Android.
@@ -83,7 +91,6 @@ tiver uma ideia para melhorar o projeto — vibecodeada ou não.
 | --- | --- |
 | Root HTML/JS/CSS | Shared player, lyrics editor, import UI and phone remote |
 | server.py | Windows library, downloads, MVSep and LAN transfers on port 8000 |
-| local_audio_runner.py and requirements files | Optional desktop AI processing |
 | native-app/src-tauri/src | Native Rust host and Android service bridge |
 | native-app/src-tauri/gen/android | Android project with custom Kotlin integrations |
 | native-app/scripts | Development, builds, packaging and logo generation |
@@ -105,8 +112,8 @@ py -3.13 -m pip install -r requirements-build.txt
 npm run dev
 ```
 
-Windows playback uses WebView2. AI tools are optional and desktop only; Android
-and TV use the online services without bundling local AI models.
+Windows playback uses WebView2. Track separation uses MVSEP on every platform;
+ready audio files can also be imported without separation.
 
 ## Build Windows
 
@@ -114,7 +121,7 @@ and TV use the online services without bundling local AI models.
 npm run build:windows
 ```
 
-Output: `releases/V1.0.2/VoxStage-1.0.2-Windows-x64.zip`. Extract the full folder and
+Output: `releases/V2.0.0/VoxStage-2.0.0-Windows-x64.zip`. Extract the full folder and
 open `VoxStage.exe` or `Abrir VoxStage.vbs`. The server runs without a terminal.
 Node and Python are included in this portable package. The packager needs the
 Node distribution's LICENSE beside node.exe; `VOXSTAGE_NODE_LICENSE` can override
@@ -131,7 +138,7 @@ npm run build:android
 ```
 
 Builds target ARM64 only, for both Android phones and Google TV.
-Public release: `releases/V1.0.2/VoxStage-1.0.2-Android-GoogleTV-ARM64.apk`.
+Public release: `releases/V2.0.0/VoxStage-2.0.0-Android-GoogleTV-ARM64.apk`.
 Output: `native-app/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk`.
 The 1.0.1 release at `releases/V1.0.1/VoxStage-1.0.1-Android-GoogleTV.apk`
 is the last universal APK with ARM32 and ARM64. VoxStage detects TV mode.
@@ -166,6 +173,10 @@ dependencies. Choose a project license before offering permission to reuse the
 VoxStage code; third-party licenses remain applicable.
 
 
+## Novidades da 1.2
+
+Edite Voz 1, Voz 2 e Backing em campos independentes, preservando seus tempos, e remova anexos do formulário quando precisar. Busque capas no Cover Art Archive pela música ou álbum e artista, use o catálogo do iTunes como alternativa ou reaproveite a pesquisa do YouTube. A miniatura da faixa escolhida vira a capa automaticamente, preservando uma capa que você já tenha colocado. Veja os detalhes no [changelog](CHANGELOG.md).
+
 ## Novidades da 1.1.2
 
 Correções na importação do YouTube para Windows, Android e Google TV, além de melhorias na recuperação de falhas da busca de capas. Veja os detalhes no [changelog](CHANGELOG.md).
@@ -189,9 +200,9 @@ O [changelog](CHANGELOG.md) reúne as novidades das versões públicas.
 
 ### Pacotes atuais
 
-Os caminhos 1.0.2 citados acima são da primeira versão pública. Para a **1.1.2**, os pacotes são:
+Os caminhos 1.0.2 citados acima são da primeira versão pública. Para a **1.2.0**, os pacotes são:
 
-- Windows x64: `releases/V1.1.2/VoxStage-1.1.2-Windows-x64.zip`.
-- Android e Google TV ARM64: `releases/V1.1.2/VoxStage-1.1.2-Android-GoogleTV-ARM64.apk`.
+- Windows x64: `releases/V1.2.0/VoxStage-1.2.0-Windows-x64.zip`.
+- Android e Google TV ARM64: `releases/V1.2.0/VoxStage-1.2.0-Android-GoogleTV-ARM64.apk`.
 
-Baixe ambos na [release 1.1.2](https://github.com/kaua0f0m/VoxStage/releases/tag/v1.1.2). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.
+Baixe ambos na [release 1.2.0](https://github.com/kaua0f0m/VoxStage/releases/tag/v1.2.0). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.
