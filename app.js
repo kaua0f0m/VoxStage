@@ -3551,7 +3551,6 @@ function openManualLineSync() {
   $('display').classList.remove('mobile-controls-hidden');
   if (!$('display').classList.contains('show')) {
     $('display').classList.add('show');
-    if (!mobileNative && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
   }
   if (manualSyncState) { enterSyncStage(); return; }
   leaveSyncStage();
@@ -4277,12 +4276,12 @@ displayExit.textContent = '⤢ Sair'; displayExit.className = 'hud-btn'; display
 const leaveDisplay = () => {
   if (manualSyncState || manualSyncDialog.classList.contains('show')) $('closeManualSync').click();
   display.classList.remove('show');
-  if (!mobileNative && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 };
 displayExit.onclick = leaveDisplay;
 quickExitButton.onclick = () => displayExit.click();
 document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement && manualSyncDialog.classList.contains('show')) $('closeManualSync').click();
+  if (!document.fullscreenElement && manualSyncDialog.classList.contains('show') && !display.classList.contains('show')) $('closeManualSync').click();
 });
 optionsPanel.remove(); $('hamb').remove();
 function navigateSong(direction) {
@@ -4430,15 +4429,12 @@ function setMiniStage(song) {
 miniCoverImage.onload = () => miniCover.classList.add('has-image');
 miniCoverImage.onerror = () => { miniCover.classList.remove('has-image'); miniCoverImage.hidden = true; };
 setMiniStage(null);
-miniStage.tabIndex = 0; miniStage.setAttribute('role', 'button'); miniStage.title = 'Abrir a apresentação em tela cheia';
-miniStage.onclick = () => { if (!current) return; $('display').classList.add('show'); $('display').classList.remove('mobile-controls-hidden'); if (!mobileNative && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); };
+miniStage.tabIndex = 0; miniStage.setAttribute('role', 'button'); miniStage.title = 'Abrir o player e as letras';
+miniStage.onclick = () => { if (!current) return; $('display').classList.add('show'); $('display').classList.remove('mobile-controls-hidden'); };
 miniStage.onkeydown = event => { if (current && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); miniStage.click(); } };
-if (mobileNative) {
-  miniStage.title = 'Abrir o player e as letras';
-  $('fullscreenBtn').title = 'Abrir o player e as letras';
-  $('fullscreenBtn').setAttribute('aria-label', 'Abrir o player e as letras');
-  $('fullscreenBtn').onclick = () => { if (current) { $('display').classList.add('show'); $('display').classList.remove('mobile-controls-hidden'); } else toast('Escolha uma música primeiro.'); };
-}
+$('fullscreenBtn').title = 'Abrir o player e as letras';
+$('fullscreenBtn').setAttribute('aria-label', 'Abrir o player e as letras');
+$('fullscreenBtn').onclick = () => { if (current) { $('display').classList.add('show'); $('display').classList.remove('mobile-controls-hidden'); } else toast('Escolha uma música primeiro.'); };
 const miniStageStyle = document.createElement('style');
 miniStageStyle.textContent = `.player .now{min-width:0;height:76px}.mini-stage{position:relative;isolation:isolate;display:flex;align-items:center;gap:11px;width:100%;height:100%;min-width:0;overflow:hidden;padding:8px 11px;border:1px solid #ffffff1c;border-radius:12px;background:linear-gradient(135deg,#282528,#171719);box-shadow:inset 0 1px #ffffff08}.mini-stage-image{position:absolute;z-index:-2;inset:0;width:100%;height:100%;object-fit:cover;opacity:.72;filter:saturate(.82)}.mini-stage-image[hidden]{display:none}.mini-stage-shade{position:absolute;z-index:-1;inset:0;background:linear-gradient(90deg,#111e 0%,#111c 48%,#1119 100%)}.mini-cover{position:relative;flex:0 0 48px;width:48px;height:48px;overflow:hidden;border-radius:9px;background:linear-gradient(135deg,#624036,#de946b);display:grid;place-items:center;color:white;font-size:18px;box-shadow:0 4px 14px #0007}.mini-cover:after{content:attr(data-fallback);position:absolute;font-weight:800;text-shadow:0 2px 8px #0008}.mini-cover.has-image:after{display:none}.mini-cover-image{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}.mini-cover-image[hidden]{display:none}.mini-stage .now-title{font-size:11px}.mini-stage .now-sub{font-size:9px}.mini-stage .now-lyric{max-width:100%;font-size:clamp(13px,1.25vw,19px);line-height:1.1;font-weight:800;white-space:nowrap;text-overflow:ellipsis;color:#fff;text-shadow:0 2px 10px #000,0 0 12px #fff7;margin-top:5px}.mini-stage .now-lyric[hidden]{display:none!important}@media(max-width:900px){.player .now{height:68px}.mini-stage{gap:7px;padding:6px 7px}.mini-cover{flex-basis:40px;width:40px;height:40px}.mini-stage .now-title{font-size:10px}.mini-stage .now-lyric{font-size:14px}}@media(max-width:590px){.player .now{height:58px;max-width:48vw}.mini-stage{gap:6px;padding:5px}.mini-cover{flex-basis:34px;width:34px;height:34px;border-radius:7px}.mini-stage .now-sub{display:none}.mini-stage .now-lyric{font-size:12px;margin-top:3px}.mini-stage .now-title{font-size:9px}}`;
 document.head.append(miniStageStyle);
@@ -5201,15 +5197,28 @@ if (!mobileNative) {
   const controlSelector = '.display-bottom,.display-hud,#mobileControlsToggle,#quickExitDisplay,.hamb,.backdrop-options,#syncToolbar';
   const scheduleStageIdle = () => {
     clearTimeout(stageIdleTimer);
-    if (!display.classList.contains('show') || display.classList.contains('sync-editing')) return;
+    if (!display.classList.contains('show') || display.classList.contains('sync-editing') || manualSyncDialog.classList.contains('show')) return;
     stageIdleTimer = setTimeout(() => {
       const hovered = [...display.querySelectorAll(controlSelector)].some(node => node.matches(':hover') && node.getClientRects().length);
-      if (!hovered && !display.classList.contains('sync-editing')) setStageControlsHidden(true);
+      if (!hovered && !display.classList.contains('sync-editing') && !manualSyncDialog.classList.contains('show')) setStageControlsHidden(true);
     }, 5000);
   };
-  display.addEventListener('pointermove', event => { if (event.pointerType === 'mouse') { setStageControlsHidden(false); scheduleStageIdle(); } });
+  window.addEventListener('pointermove', event => { if (event.pointerType === 'mouse') { setStageControlsHidden(false); scheduleStageIdle(); } }, {passive:true});
   display.addEventListener('pointerout', scheduleStageIdle);
-  display.addEventListener('keydown', () => { setStageControlsHidden(false); scheduleStageIdle(); });
+  window.addEventListener('keydown', () => { setStageControlsHidden(false); scheduleStageIdle(); }, {passive:true});
+  window.addEventListener('keydown', async event => {
+    if (event.key === 'F11') {
+      event.preventDefault();
+      if (window.__TAURI__?.core?.invoke) {
+        try {
+          const isFs = await window.__TAURI__.core.invoke('plugin:window|is_fullscreen', { label: 'main' });
+          await window.__TAURI__.core.invoke('plugin:window|set_fullscreen', { label: 'main', value: !isFs });
+        } catch (e) {
+          console.warn('Native fullscreen error:', e);
+        }
+      }
+    }
+  });
   new MutationObserver(() => {
     if (!display.classList.contains('show')) { clearTimeout(stageIdleTimer); setStageControlsHidden(false); }
     else scheduleStageIdle();
