@@ -86,15 +86,15 @@
   let cursorIdleTimer=0,lastCursorActivity=performance.now();
   function refreshStageCursor(){
     clearTimeout(cursorIdleTimer);
-    const canHide=stage.classList.contains('show')&&stage.classList.contains('mobile-controls-hidden')&&!stage.classList.contains('sync-editing');
+    const canHide=stage.classList.contains('show')&&stage.classList.contains('mobile-controls-hidden')&&!stage.classList.contains('sync-editing')&&!$('manualSyncDialog')?.classList.contains('show');
     const remaining=5000-(performance.now()-lastCursorActivity);
     stage.classList.toggle('stage-cursor-idle',canHide&&remaining<=0);
     if(canHide&&remaining>0)cursorIdleTimer=setTimeout(refreshStageCursor,remaining);
   }
   function cursorActivity(){lastCursorActivity=performance.now();refreshStageCursor();}
-  stage.addEventListener('pointermove',event=>{if(event.pointerType==='mouse')cursorActivity();});
-  stage.addEventListener('pointerdown',cursorActivity);
-  stage.addEventListener('keydown',cursorActivity);
+  window.addEventListener('pointermove',event=>{if(event.pointerType==='mouse')cursorActivity();},{passive:true});
+  window.addEventListener('pointerdown',cursorActivity,{passive:true});
+  window.addEventListener('keydown',cursorActivity,{passive:true});
   const oldHidden=setStageControlsHidden;let hiddenPaint=null,manualVisibility=null;
   setStageControlsHidden=function(collapsed,source='auto'){
     if(source==='manual'){manualVisibility=Boolean(collapsed);lastCursorActivity=performance.now();}
