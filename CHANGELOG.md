@@ -15,7 +15,7 @@
 
 O YouTube ainda pode exigir confirmação de robô em algumas redes. Na pontuação, fones de ouvido ajudam a evitar que o som da música encubra a voz ou seja contado como canto.
 
-Essa é a última versão em que eu (kaua0f0m) estarei trabalhando, por um tempo. Minha assinatura grátis do Codex acabou, e eu não consigo atualizar o app sem ela. Meu bom colega [NH] estará trabalhando em futuras atualizações com novas features, como um sistema de sincronia automatizada (usando processamento local, coisa que eu não conseguia fazer) e o playback do próprio microfone com reverb. Uma versão para Linux também está nos planos, mas sem garantia.
+Essa é a última versão em que eu (kaua0f0m) estarei trabalhando, por um tempo. Minha assinatura grátis do Codex acabou, e eu não consigo atualizar o app sem ela. Meu bom colega [willzmkv](https://github.com/willzmkv) estará trabalhando em futuras atualizações com novas features, como um sistema de sincronia automatizada (usando processamento local, coisa que eu não conseguia fazer) e o playback do próprio microfone com reverb. Uma versão para Linux também está nos planos, mas sem garantia.
 
 ## Novidades da 1.1.2
 
