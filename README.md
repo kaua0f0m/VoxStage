@@ -160,12 +160,3 @@ See `MIGRACAO.md` for moving this local workspace. Online services require the
 user's own connection and MVSep key. See `THIRD_PARTY_NOTICES.md` for bundled
 dependencies. Choose a project license before offering permission to reuse the
 VoxStage code; third-party licenses remain applicable.
-
-
-
-### Pacotes atuais
-
-- Windows x64: `releases/V2.0/VoxStage-2.0-Windows-x64.zip`.
-- Android e Google TV ARM64: `releases/V2.0/VoxStage-2.0-Android-GoogleTV-ARM64.apk`.
-
-Baixe ambos na [release 2.0](https://github.com/kaua0f0m/VoxStage/releases/tag/v2.0). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.
