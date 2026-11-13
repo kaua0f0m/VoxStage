@@ -15,14 +15,14 @@
 
 O YouTube ainda pode exigir confirmação de robô em algumas redes. Na pontuação, fones de ouvido ajudam a evitar que o som da música encubra a voz ou seja contado como canto.
 
+Essa é a última versão em que eu (kaua0f0m) estarei trabalhando, por um tempo. Minha assinatura grátis do Codex acabou, e eu não consigo atualizar o app sem ela. Meu bom colega [NH] estará trabalhando em futuras atualizações com novas features, como um sistema de sincronia automatizada (usando processamento local, coisa que eu não conseguia fazer) e o playback do próprio microfone com reverb. Uma versão para Linux também está nos planos, mas sem garantia.
+
 ## Novidades da 1.1.2
 
 - Busca de capas com recuperação de falhas de conexão, cache, proteção contra buscas duplicadas e espera indicada quando o serviço estiver indisponível.
 - Extrator do YouTube atualizado no Windows, Android e Google TV para acompanhar as mudanças do serviço.
 - Menos consultas repetidas: artista e álbum vêm da busca do YouTube Music, sem abrir cada resultado; pesquisas recentes são reaproveitadas e o download começa sem uma consulta extra de metadados.
 - Requisições espaçadas e pausa temporária quando o YouTube pede confirmação de robô, evitando tentativas em sequência. Alguns bloqueios por rede ainda podem exigir aguardar, trocar de rede ou importar o áudio de outra forma.
-
-Se não houverem mais bugs críticos, essa será a última versão do app. Ele já tem todas as features que minha mente queria que tivesse, e na medida do possível, está estavel para uso em todas as frentes (as que eu pude testar, que não incluiam processamento local no PC como exemplo).
 
 ## Novidades da 1.1.1
 
