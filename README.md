@@ -14,15 +14,6 @@
 Local karaoke for Windows, Android phones and Android / Google TV. The same
 Android application detects a TV and adapts its interface and remote controls.
 
-## Novidades da 2.0
-
-- Novas interfaces para PC, Android e TV, com importação guiada, fila e navegação por controle remoto.
-- Voz 1, Voz 2 e Backing com edição e sincronização independentes, além de duetos em gradiente.
-- Capas pelo Apple/iTunes, Cover Art Archive e miniaturas do YouTube; exportação e importação da biblioteca em `.voxstage.zip`.
-- Guia de uso, introdução guiada e personalização das fontes e cores do palco.
-
-Veja todas as mudanças no [changelog](CHANGELOG.md).
-
 # Features
 
 Plataformas
@@ -140,8 +131,6 @@ npm run build:android
 Builds target ARM64 only, for both Android phones and Google TV.
 Public release: `releases/V2.0.0/VoxStage-2.0.0-Android-GoogleTV-ARM64.apk`.
 Output: `native-app/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk`.
-The 1.0.1 release at `releases/V1.0.1/VoxStage-1.0.1-Android-GoogleTV.apk`
-is the last universal APK with ARM32 and ARM64. VoxStage detects TV mode.
 
 The current release signing configuration uses the developer's local debug key.
 Keys are not in this repository. Keep your existing key to update installed
@@ -173,36 +162,10 @@ dependencies. Choose a project license before offering permission to reuse the
 VoxStage code; third-party licenses remain applicable.
 
 
-## Novidades da 1.2
-
-Edite Voz 1, Voz 2 e Backing em campos independentes, preservando seus tempos, e remova anexos do formulário quando precisar. Busque capas no Cover Art Archive pela música ou álbum e artista, use o catálogo do iTunes como alternativa ou reaproveite a pesquisa do YouTube. A miniatura da faixa escolhida vira a capa automaticamente, preservando uma capa que você já tenha colocado. Veja os detalhes no [changelog](CHANGELOG.md).
-
-## Novidades da 1.1.2
-
-Correções na importação do YouTube para Windows, Android e Google TV, além de melhorias na recuperação de falhas da busca de capas. Veja os detalhes no [changelog](CHANGELOG.md).
-
-## Novidades da 1.1.1
-
-Pontuação mais compacta no Android em paisagem, filtro do microfone ajustável durante o canto e motor JavaScript do YouTube integrado no Android/Google TV. Recomendo fones para evitar que a música encubra sua voz ou conte como canto. Veja os ajustes e a nota sobre a experiência no celular no [changelog](CHANGELOG.md).
-
-## Novidades da 1.1
-
-- Pontuação de canto com notas sustentadas, microfone local, referências por ambos os vocais ou pelas três trilhas, início automático da música e histórico local.
-- Pontos cumulativos: 1.000 por nota acertada, sem perder pontos. Estrelas em 9/18/27/36/45%; cinco estrelas douradas em 55%.
-- Velocidade de 0,75× a 1,25× e tom de −4 a +4 semitons em tempo real, com letras e pontuação acompanhando os ajustes.
-- Celular conectado como microfone do PC/TV, além da captura nativa no Android. Essa integração ainda precisa de avaliação em aparelhos físicos.
-- Faixa de notas adaptada ao Android vertical/horizontal e à TV, com letras opcionais e controles compactos.
-- Preenchimento automático pelo YouTube, correções de metadados do YouTube Music, melhor reconhecimento do instrumental no MVSEP e botão Acoplar arquivos.
-- Busca automática de letras com recuperação de falhas temporárias; pausas instrumentais preservam o texto e respeitam a sincronização dos trechos cantados.
-- Aba Sobre com logo, versão, autor, inspiração e atribuições; links abrem o navegador e as configurações ficam mais organizadas.
-
-O [changelog](CHANGELOG.md) reúne as novidades das versões públicas.
 
 ### Pacotes atuais
 
-Os caminhos 1.0.2 citados acima são da primeira versão pública. Para a **1.2.0**, os pacotes são:
+- Windows x64: `releases/V2.0/VoxStage-2.0-Windows-x64.zip`.
+- Android e Google TV ARM64: `releases/V2.0/VoxStage-2.0-Android-GoogleTV-ARM64.apk`.
 
-- Windows x64: `releases/V1.2.0/VoxStage-1.2.0-Windows-x64.zip`.
-- Android e Google TV ARM64: `releases/V1.2.0/VoxStage-1.2.0-Android-GoogleTV-ARM64.apk`.
-
-Baixe ambos na [release 1.2.0](https://github.com/kaua0f0m/VoxStage/releases/tag/v1.2.0). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.
+Baixe ambos na [release 2.0](https://github.com/kaua0f0m/VoxStage/releases/tag/v2.0). O APK usa a mesma identidade de assinatura das versões anteriores para permitir atualização preservando os dados do aplicativo.
